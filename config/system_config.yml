@@ -185,13 +185,13 @@ llm_config:
           8. No comments or trailing commas allowed, or markdown formatting
 
         extract: |
-          Extract all code change actions from the input, regardless of format.
+          Extract all information objects from the input, regardless of format.
           
           Content to analyze:
           {content}
 
           Each change action must include:
-          1. file_path: Path of the file to modify
+          1. file_path: Path of the file to modify (if available)
           2. type: One of "modify", "create", or "delete"
           3. content: The complete new content (if available)
           4. diff: Git-style diff (if content not available)
@@ -223,7 +223,6 @@ llm_config:
           3. Each object MUST be unique 
           4. Follow exact format for single object response
           5. Maintain strict sequential order of original object
-s
         extract: |
           Extract the {ordinal} object from the input.
           
