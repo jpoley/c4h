@@ -1,6 +1,6 @@
 """
-Local implementation of intent service using direct agent orchestration.
-Path: c4h_services/src/intent/impl/local/service.py
+Prefect implementation of intent service.
+Path: c4h_services/src/intent/impl/prefect/service.py
 """
 
 from typing import Dict, Any, Optional
@@ -8,20 +8,18 @@ from pathlib import Path
 import structlog
 from datetime import datetime
 import uuid
+from prefect.client import get_client
+from prefect.deployments import Deployment
 
 from c4h_agents.config import load_config, load_with_app_config
-from c4h_agents.agents.discovery import DiscoveryAgent
-from c4h_agents.agents.solution_designer import SolutionDesigner
-from c4h_agents.agents.coder import Coder
-from c4h_agents.agents.assurance import AssuranceAgent
-from c4h_agents.models.workflow_state import WorkflowState
+from .flows import run_intent_workflow, run_recovery_workflow, run_rollback_workflow
 
 logger = structlog.get_logger()
 
-class LocalIntentService:
+class PrefectIntentService:
     """
-    Simple implementation using direct agent orchestration.
-    Maintains compatibility with existing code while providing service interface.
+    Prefect-based implementation of intent service interface.
+    Handles workflow orchestration while maintaining agent independence.
     """
     
     def __init__(self, config_path: Optional[Path] = None):
@@ -33,123 +31,140 @@ class LocalIntentService:
                 self.config = load_with_app_config(system_path, config_path)
             else:
                 self.config = load_config(system_path)
-                
-            # Track running workflows
-            self._workflows: Dict[str, WorkflowState] = {}
             
-            logger.info("local_service.initialized",
+            # Initialize Prefect client for flow operations
+            self.client = get_client()
+            
+            logger.info("prefect_service.initialized",
                        config_path=str(config_path) if config_path else None)
             
         except Exception as e:
-            logger.error("local_service.init_failed", error=str(e))
+            logger.error("prefect_service.init_failed", error=str(e))
             raise
 
-    def process_intent(
+    async def process_intent(
         self,
         project_path: Path,
         intent_desc: Dict[str, Any],
         max_iterations: int = 3
     ) -> Dict[str, Any]:
-        """Process refactoring intent through direct agent orchestration"""
+        """Process refactoring intent through Prefect workflow"""
         try:
-            # Generate workflow ID
-            intent_id = str(uuid.uuid4())
-            
-            # Initialize workflow state
-            workflow_state = WorkflowState(
-                intent_description=intent_desc,
-                project_path=str(project_path),
-                max_iterations=max_iterations
+            logger.info("prefect_service.processing",
+                       project_path=str(project_path),
+                       intent=intent_desc)
+
+            # Execute workflow
+            flow_run = await self.client.create_flow_run(
+                flow=run_intent_workflow,
+                parameters={
+                    "project_path": project_path,
+                    "intent_desc": intent_desc,
+                    "config": self.config,
+                    "max_iterations": max_iterations
+                }
             )
             
-            self._workflows[intent_id] = workflow_state
-            
-            # Execute discovery
-            discovery = DiscoveryAgent(config=self.config)
-            discovery_result = discovery.process({
-                "project_path": str(project_path)
-            })
-            
-            if not discovery_result.success:
-                return self._handle_error(intent_id, "Discovery failed", discovery_result.error)
-                
-            workflow_state.update_agent_state("discovery", discovery_result)
-            
-            # Execute solution design
-            solution = SolutionDesigner(config=self.config)
-            solution_result = solution.process({
-                "input_data": {
-                    "discovery_data": discovery_result.data,
-                    "intent": intent_desc
-                },
-                "iteration": workflow_state.iteration
-            })
-            
-            if not solution_result.success:
-                return self._handle_error(intent_id, "Solution design failed", solution_result.error)
-                
-            workflow_state.update_agent_state("solution_design", solution_result)
-            
-            # Execute code changes
-            coder = Coder(config=self.config)
-            coder_result = coder.process({
-                "input_data": solution_result.data
-            })
-            
-            if not coder_result.success:
-                return self._handle_error(intent_id, "Code changes failed", coder_result.error)
-                
-            workflow_state.update_agent_state("coder", coder_result)
-            
-            # Execute assurance
-            assurance = AssuranceAgent(config=self.config)
-            assurance_result = assurance.process({
-                "changes": coder_result.data.get("changes", []),
-                "intent": intent_desc
-            })
-            
-            workflow_state.update_agent_state("assurance", assurance_result)
+            # Wait for completion
+            flow_state = await self.client.wait_for_flow_run(
+                flow_run.id,
+                timeout=1800  # 30 minutes
+            )
+
+            if flow_state.is_completed():
+                result = flow_state.result()
+                logger.info("prefect_service.completed",
+                          flow_id=flow_run.id,
+                          status=result.get("status"))
+                return result
+            else:
+                error = f"Flow failed: {flow_state.message}"
+                logger.error("prefect_service.flow_failed",
+                           flow_id=flow_run.id,
+                           error=error)
+                return {
+                    "status": "error",
+                    "error": error,
+                    "workflow_data": {}
+                }
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error("prefect_service.failed", error=error_msg)
+            return {
+                "status": "error",
+                "error": error_msg,
+                "workflow_data": {}
+            }
+
+    async def get_status(self, intent_id: str) -> Dict[str, Any]:
+        """Get status from Prefect flow run"""
+        try:
+            # Get flow run state
+            flow_run = await self.client.read_flow_run(intent_id)
             
             return {
                 "status": "success",
-                "intent_id": intent_id,
-                "workflow_data": workflow_state.to_dict(),
-                "error": None
+                "workflow_data": {
+                    "flow_id": flow_run.id,
+                    "status": flow_run.state.name,
+                    "start_time": flow_run.start_time,
+                    "end_time": flow_run.end_time,
+                    "duration": flow_run.total_run_time,
+                    "error": flow_run.state.message if flow_run.state.is_failed() else None
+                }
             }
-
+            
         except Exception as e:
-            return self._handle_error(intent_id, "Workflow failed", str(e))
-
-    def get_status(self, intent_id: str) -> Dict[str, Any]:
-        """Get status of workflow by ID"""
-        workflow = self._workflows.get(intent_id)
-        if not workflow:
+            logger.error("status.failed", error=str(e), intent_id=intent_id)
             return {
                 "status": "error",
-                "error": f"No workflow found with ID: {intent_id}"
+                "error": f"Failed to get status: {str(e)}"
             }
-        return {
-            "status": "success",
-            "workflow_data": workflow.to_dict()
-        }
 
-    def cancel_intent(self, intent_id: str) -> bool:
-        """Cancel a running workflow"""
-        if intent_id in self._workflows:
-            del self._workflows[intent_id]
+    async def cancel_intent(self, intent_id: str) -> bool:
+        """Cancel Prefect flow run"""
+        try:
+            await self.client.set_flow_run_state(
+                flow_run_id=intent_id,
+                state="CANCELLED"
+            )
+            
+            logger.info("intent.cancelled", intent_id=intent_id)
             return True
-        return False
-        
-    def _handle_error(self, intent_id: str, message: str, error: str) -> Dict[str, Any]:
-        """Handle workflow error with proper logging"""
-        logger.error("workflow.error",
-                    intent_id=intent_id,
-                    message=message,
-                    error=error)
-        workflow = self._workflows.get(intent_id)
-        return {
-            "status": "error",
-            "intent_id": intent_id,
-            "error": f"{message}: {error}",
-            "workflow_data": workflow.to_dict() if workflow else {}
-        }
+            
+        except Exception as e:
+            logger.error("cancel.failed", error=str(e), intent_id=intent_id)
+            return False
+
+    async def create_deployment(
+        self,
+        name: str,
+        schedule: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a deployment for the intent workflow.
+        Enables scheduling and remote execution.
+        """
+        try:
+            deployment = await Deployment.build_from_flow(
+                flow=run_intent_workflow,
+                name=name,
+                schedule=schedule,
+                work_queue_name="intent_refactor"
+            )
+            
+            await deployment.apply()
+            
+            return {
+                "status": "success",
+                "deployment_id": deployment.id,
+                "name": deployment.name
+            }
+            
+        except Exception as e:
+            logger.error("deployment.failed", error=str(e))
+            return {
+                "status": "error",
+                "error": str(e)
+            }
