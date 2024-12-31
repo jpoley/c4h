@@ -1,0 +1,30 @@
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  agents:
+    coder:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      backup_enabled: true
+
+input_data:
+  content: |
+    def greet(name: str) -> None:
+        """
+        Print a greeting message to the specified person.
+        
+        Args:
+            name: The name of the person to greet
+        """
+        print(f'Hello, {name}!')
+  file_path: "test_sample.py"
+  type: "modify"
+  description: "Add docstring and type hints to greeting function"
+
+instruction: "Extract and apply code changes"
+format: "json"
+
+backup:
+  enabled: true
+  path: "workspaces/backups"

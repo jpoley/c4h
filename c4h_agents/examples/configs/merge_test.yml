@@ -1,0 +1,31 @@
+# Configuration for semantic merge testing
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  agents:
+    semantic_merge:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      # Merge-specific configuration
+      merge_config:
+        style: "smart"
+        preserve_formatting: true
+      # Runtime configuration
+      original_code: |
+        def calculate_total(items):
+            return sum(item['price'] for item in items)
+      changes: |
+        def calculate_total(items):
+            """Calculate total price with tax
+            Args:
+                items: List of items with 'price' field
+            Returns:
+                float: Total price with 8.5% tax
+            """
+            subtotal = sum(item['price'] for item in items)
+            return subtotal * 1.085
+
+# Top-level instruction for the operation
+instruction: "Merge the changes into original code while preserving functionality"
+format: "python"

@@ -1,0 +1,28 @@
+# asset_manager_test.yml
+
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  agents:
+    semantic_merge:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      preserve_formatting: true
+      style: "smart"
+
+input_data:  # Direct action details, no nesting
+  file_path: "test/source.py"
+  type: "modify"
+  content: |
+    def sum_values(numbers):
+        """Sum a list of numbers"""
+        return sum(numbers)
+  description: "Simplify implementation using built-in sum()"
+
+instruction: "Process the file modification using the asset manager"
+format: "json"
+
+backup:
+  enabled: true
+  path: "workspaces/backups"

@@ -1,0 +1,39 @@
+# discovery_refactor_config.yml
+project:
+  default_path: "/Users/jim/src/apps/c4h_ai_built_coder"  # Absolute path to project
+  workspace_root: "/Users/jim/src/apps/c4h_ai_built_coder/workspaces"
+
+runtime:
+  max_iterations: 3
+  intent:
+    description: |
+      Enhance the asset manager to properly handle absolute and relative paths:
+      1. Add project_root tracking to determine relative paths from config
+      2. Add _get_relative_path method to maintain structure
+      3. Modify _get_next_backup_path to preserve directory structure under backups
+      4. Add detailed path logging for debugging
+      5. Use Path.resolve() and relative_to() for reliable path calculations
+      6. Ensure all parent directories are created for backups
+      The changes must preserve all existing functionality:
+      - Keep existing backup timestamp format
+      - Maintain all current backup operations
+      - Keep existing error handling
+      - Preserve all existing config options
+    scope: ["src/skills/asset_manager.py"]
+
+llm_config:
+  agents:
+    discovery:
+      tartxt_config:  # Changed from tartxt to tartxt_config to match implementation
+        input_paths:  # Paths for tartxt to scan
+          - "src config"
+        exclusions:  # Exclusion patterns for tartxt
+          - "**/__pycache__/**"
+          - "**/.git/**"
+          - "**/*.pyc"
+        output_type: "stdout"  # Changed from embedded to stdout which tartxt supports
+        output_file: null  # Optional, only used if output_type is "file"
+
+backup:
+  enabled: true
+  path: "/Users/jim/src/apps/c4h_ai_built_coder/workspaces/backups"

@@ -1,0 +1,36 @@
+# iter_config_01.yml
+
+llm_config:
+  agents:
+    semantic_iterator:
+      temperature: 0
+      extractor_config:
+        mode: "fast"
+        allow_fallback: true
+
+input_data: |
+  Common birds in North America include the American Robin, 
+  which has a red breast and yellow beak. The Blue Jay is 
+  known for its bright blue feathers and loud calls. 
+  Northern Cardinals are striking red birds often seen at feeders.
+  The tiny Ruby-throated Hummingbird can hover and fly backwards.
+
+instruction: |
+  Return the bird at position {ordinal} from the input text, following these rules:
+
+  1. Count birds in order of mention in the text.
+  2. Return NO_MORE_ITEMS if {ordinal} is greater than the total number of birds.
+  3. For a valid position, return the bird's details as a JSON object with:
+    - name: Bird's name
+    - colors: Array of actual colors (e.g. red, blue, yellow)
+    - features: Array of traits and behaviors
+    - location: Where it's found (if mentioned)
+
+  For example, in:
+  "The red robin flies fast. A blue jay calls loudly."
+  Position 1 = red robin
+  Position 2 = blue jay
+  Position 3 = NO_MORE_ITEMS (exceeds total birds)
+
+  Format: Either a single JSON object for the bird, or exactly "NO_MORE_ITEMS"
+format: "json"

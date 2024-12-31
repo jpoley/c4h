@@ -1,0 +1,27 @@
+# coder_test.yml
+provider: "anthropic"
+model: "claude-3-opus-20240229"
+temperature: 0
+
+input_data: |
+  [
+    {
+      "file_path": "test.py",
+      "content": "print('hello')",
+      "type": "modify", 
+      "description": "test change"
+    },
+    {
+      "file_path": "test2.py",
+      "content": "print('world')",
+      "type": "modify",
+      "description": "second test change"
+    }
+  ]
+
+instruction: |
+  Return each change object exactly as provided.
+  Make no transformations to the content.
+  Preserve all fields and structure.
+
+format: "json"

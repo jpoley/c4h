@@ -1,0 +1,117 @@
+# coder_config01.yml
+
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  agents:
+    coder:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+
+input_data:
+  changes:
+    - file_path: "tests/test_projects/project1/sample.py"
+      type: "modify"
+      description: "Add logging to every function and change print to logging"
+      content: |
+        import logging
+
+        logging.basicConfig(level=logging.INFO)
+
+        def greet(name):
+            logging.info(f"Hello, {name}!")
+
+        def calculate_sum(numbers):
+            result = sum(numbers)
+            logging.info(f"Calculated sum: {result}")
+            return result
+
+        if __name__ == "__main__":
+            greet("World")
+            logging.info(calculate_sum([1, 2, 3, 4, 5]))
+    - file_path: "tests/test_projects/project3/test_java.java"
+      type: "modify"
+      description: "Add logging to every function"
+      content: |
+        import java.util.logging.Logger;
+
+        public class UserManager {
+            private static final Logger logger = Logger.getLogger(UserManager.class.getName());
+            
+            public void createUser(String username, String email) {
+                logger.info(String.format("Creating user with username: %s and email: %s", username, email));
+                
+                if (validateUser(username, email)) {
+                    logger.info(String.format("User %s validated successfully", username));
+                    saveUser(username, email);
+                } else {
+                    logger.warning(String.format("Error: Failed to validate user %s", username));
+                }
+            }
+            
+            private boolean validateUser(String username, String email) {
+                logger.info(String.format("Validating user data for %s", username));
+                if (username == null || email == null) {
+                    logger.warning("Validation failed - null values detected");
+                    return false;
+                }
+                return true;
+            }
+            
+            private void saveUser(String username, String email) {
+                logger.info(String.format("Saving user %s to database", username));
+                // Database operations here
+                logger.info(String.format("Successfully saved user %s", username));
+            }
+        }
+    - file_path: "tests/test_projects/project2/utils.py"
+      type: "modify"
+      description: "Add logging to every function"
+      content: |
+        import logging
+
+        logging.basicConfig(level=logging.INFO)
+
+        def format_name(name):
+            """Format name by stripping whitespace and converting to title case"""
+            logging.info(f"Formatting name: {name}")
+            return name.strip().title()
+
+        def validate_age(age):
+            """Validate age is an integer between 0 and 150"""
+            logging.info(f"Validating age: {age}")
+            if not isinstance(age, int):
+                logging.error("Age must be an integer")
+                raise TypeError("Age must be an integer")
+            if age < 0 or age > 150:
+                logging.error("Age must be between 0 and 150")
+                raise ValueError("Age must be between 0 and 150")
+            return age
+    - file_path: "tests/test_projects/project2/main.py"
+      type: "modify"
+      description: "Add logging to every function and change print to logging"
+      content: |
+        import logging
+        from utils import format_name, validate_age
+
+        logging.basicConfig(level=logging.INFO)
+
+        def process_user(user_data):
+            """Process user data and return formatted string"""
+            logging.info(f"Processing user data: {user_data}")
+            name = format_name(user_data["name"])
+            age = validate_age(user_data["age"])
+            result = f"{name} is {age} years old"
+            logging.info(result)
+            return result
+
+        if __name__ == "__main__":
+            test_data = {
+                "name": "john doe",
+                "age": 25
+            }
+            process_user(test_data)
+
+instruction: "Apply the changes"
+format: "json"

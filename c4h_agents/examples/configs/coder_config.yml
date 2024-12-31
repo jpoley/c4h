@@ -1,0 +1,50 @@
+# coder_config.yml
+
+provider: "anthropic"
+model: "claude-3-opus-20240229"
+temperature: 0
+env_var: "ANTHROPIC_API_KEY"
+api_base: "https://api.anthropic.com"
+
+project_path: "tests/test_projects/project1"
+
+input_data: |
+  Changes to add logging to sample.py:
+  ```python
+  import logging
+  
+  logging.basicConfig(level=logging.INFO)
+  logger = logging.getLogger(__name__)
+
+  def greet(name):
+      logger.info(f"Greeting user: {name}")
+      print(f"Hello, {name}!")
+
+  def calculate_sum(numbers):
+      logger.debug(f"Calculating sum of numbers: {numbers}")
+      result = sum(numbers)
+      logger.info(f"Sum calculated: {result}")
+      return result
+
+  if __name__ == "__main__":
+      greet("World")
+      print(calculate_sum([1, 2, 3, 4, 5]))
+  ```
+
+instruction: |
+  Find code blocks in the markdown-formatted input and extract each as a change.
+  For each code block:
+  1. The file path should be "sample.py" as it's mentioned in the description
+  2. The content should be the complete code block content without markdown
+  3. The type should be "modify" as this updates existing code
+  4. Include a description of "Adding logging functionality"
+  
+  Return each change as a JSON object with exact fields:
+  {
+    "file_path": "sample.py",
+    "content": "complete code without markdown",
+    "type": "modify",
+    "description": "Adding logging functionality"
+  }
+
+format: "json"
