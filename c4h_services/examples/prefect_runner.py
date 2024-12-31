@@ -14,10 +14,6 @@ import yaml
 from enum import Enum
 
 # Add source directories to path
-c4h_root = Path(__file__).parent.parent.parent
-sys.path.append(str(c4h_root / 'c4h_agents' / 'src'))
-
-# Import agent modules directly from src directory
 from agents.base import BaseAgent
 from agents.coder import Coder
 from agents.discovery import DiscoveryAgent
@@ -27,6 +23,7 @@ from skills.semantic_iterator import SemanticIterator
 from skills.semantic_merge import SemanticMerge
 from skills.semantic_extract import SemanticExtract
 from skills.asset_manager import AssetManager
+from skills.shared.types import ExtractConfig
 from config import deep_merge
 
 logger = structlog.get_logger()
@@ -97,6 +94,74 @@ def parse_param(param_str: str) -> tuple[str, Any]:
     except ValueError:
         raise ValueError(f"Invalid parameter format: {param_str}. Use key=value format")
 
+def format_llm_content(data: Any) -> str:
+    """Format LLM response content for display.
+    
+    Handles:
+    - ModelResponse objects
+    - Raw text
+    - Dictionary with nested content
+    - Escaped multiline strings
+    """
+    try:
+        # Handle ModelResponse objects
+        if hasattr(data, 'choices') and data.choices:
+            data = data.choices[0].message.content
+            
+        # Handle dictionary responses
+        if isinstance(data, dict):
+            # Look for common content fields
+            for key in ['content', 'response', 'text', 'result']:
+                if key in data:
+                    data = data[key]
+                    break
+        
+        # Convert to string
+        content = str(data)
+        
+        # Handle escaped newlines and indentation
+        content = content.replace('\\n', '\n')
+        content = content.replace('\\t', '\t')
+        content = content.replace('\\"', '"')
+        
+        # Strip any markdown code block markers
+        if content.startswith('```') and content.endswith('```'):
+            content = '\n'.join(content.split('\n')[1:-1])
+            
+        return content
+        
+    except Exception as e:
+        logger.error("display.format_failed", error=str(e))
+        return str(data)
+
+def display_output(output: Dict[str, Any]) -> None:
+    """Display formatted output with robust type handling"""
+    print("\n=== Results ===\n")
+    
+    try:
+        # For lists of results
+        if isinstance(output, dict) and 'results' in output:
+            for item in output['results']:
+                # Format each item's content
+                if isinstance(item, dict):
+                    for key in ['file_path', 'type', 'description']:
+                        if key in item:
+                            print(f"{key.replace('_', ' ').title()}: {item[key]}\n")
+                    
+                    if 'content' in item:
+                        print("Content:")
+                        print(format_llm_content(item['content']))
+                    print("-" * 80)
+                else:
+                    print(format_llm_content(item))
+        else:
+            # Format top-level output
+            print(format_llm_content(output))
+                    
+    except Exception as e:
+        logger.error("display.output_failed", error=str(e))
+        print(str(output))
+
 @task(retries=2, retry_delay_seconds=10)
 def run_agent_task(
     agent_type: str,
@@ -110,15 +175,35 @@ def run_agent_task(
         # Initialize agent with config
         agent_class = AGENT_TYPES[agent_type]
         agent = agent_class(config=config)
+
+        # Handle iterator types specially
+        if isinstance(agent, SemanticIterator):
+            # Configure iterator
+            agent.configure(
+                content=config.get('input_data'),
+                config=ExtractConfig(
+                    instruction=config.get('instruction'),
+                    format=config.get('format', 'json')
+                )
+            )
+            
+            # Collect all items
+            results = []
+            for item in agent:
+                results.append(item)
+
+            return {
+                'success': True,
+                'data': {'results': results},  # Match testharness structure
+                'error': None
+            }
         
-        # Build context from config and extra args
+        # For non-iterator agents, use standard processing
         context = {'input_data': config.get('input_data', {})}
         if extra_args:
             context.update(extra_args)
 
-        # Execute agent
         result = agent.process(context)
-        
         return {
             'success': result.success,
             'data': result.data,
@@ -142,10 +227,7 @@ def run_test_flow(
     try:
         # Load merged config
         config = load_config(config_path)
-        logger.debug("config.loaded", 
-                    has_providers=bool(config.get('providers')),
-                    has_llm_config=bool(config.get('llm_config')))
-
+        
         # Execute agent task
         result = run_agent_task(
             agent_type=agent_type,
@@ -153,10 +235,9 @@ def run_test_flow(
             extra_args=extra_params
         )
         
-        # Format output similar to testharness
+        # Display output using same formatting as testharness
         if result['success']:
-            print("\n=== Results ===\n")
-            print(result['data'])
+            display_output(result['data'])
         else:
             print(f"\nError: {result['error']}")
         

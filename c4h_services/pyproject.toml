@@ -12,18 +12,18 @@ description = "Service implementations for c4h_agents"
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
-    "c4h_agents",
+    # Local monorepo dependency - direct path reference
+    # Regular dependencies
     "prefect>=2.14.0",
     "pyyaml>=6.0.1",
     "rich>=13.7.0", 
     "structlog>=23.2.0"
 ]
 
-[project.optional-dependencies]
-test = ["pytest>=7.0.0"]
-
 [tool.hatch.build]
-include = ["src/**/*.py"]
+include = [
+    "src/**/*.py",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
