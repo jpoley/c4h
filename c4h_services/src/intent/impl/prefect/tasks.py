@@ -32,14 +32,6 @@ def run_agent_task(
 ) -> Dict[str, Any]:
     """
     Prefect task wrapper for agent execution.
-    
-    Args:
-        agent_config: Configuration for agent execution
-        context: Input context for agent
-        task_name: Optional task name for Prefect UI
-    
-    Returns:
-        Dictionary containing execution results
     """
     prefect_logger = get_run_logger()
     
@@ -52,21 +44,40 @@ def run_agent_task(
 
         # Special handling for iterator
         if isinstance(agent, SemanticIterator):
+            input_data = context.get('input_data', {})
+            
+            # Handle both string and dict input formats
+            if isinstance(input_data, str):
+                content = input_data
+                instruction = agent_config.config.get('instruction', '')
+                format_hint = agent_config.config.get('format', 'json')
+            else:
+                content = input_data.get('content', input_data.get('input_data', ''))
+                instruction = input_data.get('instruction', agent_config.config.get('instruction', ''))
+                format_hint = input_data.get('format', agent_config.config.get('format', 'json'))
+
             # Configure iterator
             extract_config = ExtractConfig(
-                instruction=context.get('input_data', {}).get('instruction', ''),
-                format=context.get('input_data', {}).get('format', 'json')
+                instruction=instruction,
+                format=format_hint
             )
+            
+            prefect_logger.info(f"Configuring iterator with format: {format_hint}")
+            
             agent.configure(
-                content=context.get('input_data', {}).get('content', ''),
+                content=content,
                 config=extract_config
             )
             
             # Collect all items
             results = []
-            for item in agent:
-                results.append(item)
-                prefect_logger.info(f"Extracted item {len(results)}")
+            try:
+                for item in agent:
+                    results.append(item)
+                    prefect_logger.info(f"Extracted item {len(results)}")
+            except StopIteration:
+                if not results:
+                    raise ValueError("No items could be extracted")
 
             return {
                 "success": True,

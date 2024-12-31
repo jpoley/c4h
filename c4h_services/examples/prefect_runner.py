@@ -56,7 +56,11 @@ AGENT_REGISTRY = {
     # Add custom configs for skills
     "semantic_iterator": lambda config: AgentTaskConfig(
         agent_class=SemanticIterator,
-        config=config,
+        config={
+            **config,  # Base config
+            "instruction": config.get('instruction', ''),
+            "format": config.get('format', 'json'),
+        },
         task_name="semantic_iterator"
     ),
     "semantic_merge": lambda config: AgentTaskConfig(
