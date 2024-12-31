@@ -27,23 +27,32 @@ from c4h_agents.skills.semantic_extract import SemanticExtract
 from c4h_agents.skills.asset_manager import AssetManager
 from c4h_agents.config import deep_merge
 
-from c4h_services.src.intent.impl.prefect.tasks import (
-    AgentTaskConfig,
-    run_agent_task,
-    create_discovery_task,
-    create_solution_task,
-    create_coder_task,
-    create_assurance_task
-)
+from c4h_services.src.intent.impl.prefect.tasks import AgentTaskConfig, run_agent_task
 
 logger = structlog.get_logger()
 
-# Agent registry with task creation functions
+# Agent registry
 AGENT_REGISTRY = {
-    "discovery": create_discovery_task,
-    "solution_designer": create_solution_task,
-    "coder": create_coder_task,
-    "assurance": create_assurance_task,
+    "discovery": lambda config: AgentTaskConfig(
+        agent_class=DiscoveryAgent,
+        config=config,
+        task_name="discovery"
+    ),
+    "solution_designer": lambda config: AgentTaskConfig(
+        agent_class=SolutionDesigner,
+        config=config,
+        task_name="solution_design"
+    ),
+    "coder": lambda config: AgentTaskConfig(
+        agent_class=Coder,
+        config=config,
+        task_name="coder"
+    ),
+    "assurance": lambda config: AgentTaskConfig(
+        agent_class=AssuranceAgent,
+        config=config,
+        task_name="assurance"
+    ),
     # Add custom configs for skills
     "semantic_iterator": lambda config: AgentTaskConfig(
         agent_class=SemanticIterator,

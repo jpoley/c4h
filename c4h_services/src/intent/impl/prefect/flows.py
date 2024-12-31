@@ -1,18 +1,19 @@
 """
-Prefect workflow definitions for intent-based refactoring.
+Prefect workflow definitions using native state management.
 Path: c4h_services/src/intent/impl/prefect/flows.py
 """
 
-from prefect import flow, task
-from prefect.context import get_flow_context
+from prefect import flow, task, get_run_logger
+from prefect.states import Completed, Failed, Pending
+from prefect.context import get_flow_context, FlowRunContext
+from prefect.utilities.annotations import unmapped
 from typing import Dict, Any, Optional
 import structlog
 from pathlib import Path
-import uuid
+import json
 
-from c4h_agents.models.workflow_state import WorkflowState
 from .tasks import (
-    run_agent_task, 
+    run_agent_task,
     create_discovery_task,
     create_solution_task,
     create_coder_task,
@@ -21,10 +22,11 @@ from .tasks import (
 
 logger = structlog.get_logger()
 
-@flow(name="intent_refactoring", 
+@flow(name="intent_refactoring",
       description="Main workflow for intent-based refactoring",
       retries=2,
-      retry_delay_seconds=60)
+      retry_delay_seconds=60,
+      persist_result=True)
 def run_intent_workflow(
     project_path: Path,
     intent_desc: Dict[str, Any],
@@ -32,8 +34,7 @@ def run_intent_workflow(
     max_iterations: int = 3
 ) -> Dict[str, Any]:
     """
-    Main workflow for intent-based refactoring.
-    Orchestrates the complete refactoring process using Prefect.
+    Main workflow for intent-based refactoring using Prefect state management.
     
     Args:
         project_path: Path to project to refactor
@@ -42,25 +43,21 @@ def run_intent_workflow(
         max_iterations: Maximum number of refinement iterations
         
     Returns:
-        Dictionary containing:
-        - status: "success" or "error"
-        - workflow_data: Complete workflow state
-        - error: Error message if failed
+        Dictionary containing workflow results and state
     """
     flow_context = get_flow_context()
+    logger = get_run_logger()
     
     try:
-        # Initialize workflow state
-        workflow_state = WorkflowState(
-            intent_description=intent_desc,
-            project_path=str(project_path),
-            max_iterations=max_iterations,
-            flow_id=str(flow_context.flow_run.id)
+        # Store initial metadata in flow state
+        flow_run = flow_context.flow_run
+        flow_run.update(
+            parameters={
+                "project_path": str(project_path),
+                "intent": intent_desc,
+                "max_iterations": max_iterations
+            }
         )
-
-        logger.info("intent_workflow.started",
-                   flow_id=workflow_state.flow_id,
-                   project_path=str(project_path))
 
         # Configure tasks
         discovery_config = create_discovery_task(config)
@@ -68,22 +65,23 @@ def run_intent_workflow(
         coder_config = create_coder_task(config)
         assurance_config = create_assurance_task(config)
 
-        # Run discovery
+        # Run discovery with state tracking
         discovery_result = run_agent_task(
             agent_config=discovery_config,
             context={"project_path": str(project_path)},
             task_name="discovery"
         )
-
+        
         if not discovery_result["success"]:
-            return {
-                "status": "error",
-                "error": discovery_result["error"],
-                "workflow_data": workflow_state.to_dict()
-            }
-
-        # Update workflow state
-        workflow_state.discovery_data = discovery_result["stage_data"]
+            return Failed(
+                message=f"Discovery failed: {discovery_result['error']}",
+                result={
+                    "status": "error",
+                    "error": discovery_result["error"],
+                    "stage": "discovery",
+                    "flow_id": str(flow_run.id)
+                }
+            )
 
         # Run solution design
         solution_result = run_agent_task(
@@ -93,19 +91,22 @@ def run_intent_workflow(
                     "discovery_data": discovery_result["result_data"],
                     "intent": intent_desc
                 },
-                "iteration": workflow_state.iteration
+                "iteration": 0  # Track in flow state
             },
             task_name="solution_design"
         )
 
         if not solution_result["success"]:
-            return {
-                "status": "error",
-                "error": solution_result["error"],
-                "workflow_data": workflow_state.to_dict()
-            }
-
-        workflow_state.solution_design_data = solution_result["stage_data"]
+            return Failed(
+                message=f"Solution design failed: {solution_result['error']}",
+                result={
+                    "status": "error",
+                    "error": solution_result["error"],
+                    "stage": "solution_design",
+                    "flow_id": str(flow_run.id),
+                    "discovery_data": discovery_result["stage_data"]
+                }
+            )
 
         # Run coder
         coder_result = run_agent_task(
@@ -117,13 +118,17 @@ def run_intent_workflow(
         )
 
         if not coder_result["success"]:
-            return {
-                "status": "error",
-                "error": coder_result["error"],
-                "workflow_data": workflow_state.to_dict()
-            }
-
-        workflow_state.coder_data = coder_result["stage_data"]
+            return Failed(
+                message=f"Code changes failed: {coder_result['error']}",
+                result={
+                    "status": "error",
+                    "error": coder_result["error"],
+                    "stage": "coder",
+                    "flow_id": str(flow_run.id),
+                    "discovery_data": discovery_result["stage_data"],
+                    "solution_data": solution_result["stage_data"]
+                }
+            )
 
         # Run assurance
         assurance_result = run_agent_task(
@@ -135,49 +140,73 @@ def run_intent_workflow(
             task_name="assurance"
         )
 
-        workflow_state.assurance_data = assurance_result["stage_data"]
-
-        logger.info("intent_workflow.completed",
-                   flow_id=workflow_state.flow_id,
-                   success=assurance_result["success"])
-
-        return {
-            "status": "success",
-            "workflow_data": workflow_state.to_dict(),
-            "error": None
-        }
+        # Return completed state with full result data
+        return Completed(
+            message="Workflow completed successfully",
+            result={
+                "status": "success",
+                "flow_id": str(flow_run.id),
+                "stages": {
+                    "discovery": discovery_result["stage_data"],
+                    "solution_design": solution_result["stage_data"],
+                    "coder": coder_result["stage_data"],
+                    "assurance": assurance_result["stage_data"]
+                },
+                "result": {
+                    "changes": coder_result["result_data"].get("changes", []),
+                    "validation": assurance_result["result_data"]
+                }
+            }
+        )
 
     except Exception as e:
         error_msg = str(e)
-        logger.error("intent_workflow.failed", 
-                    error=error_msg,
-                    flow_id=getattr(workflow_state, 'flow_id', None))
-        return {
-            "status": "error",
-            "error": error_msg,
-            "workflow_data": workflow_state.to_dict() if 'workflow_state' in locals() else {}
-        }
+        logger.error("intent_workflow.failed", error=error_msg)
+        return Failed(
+            message=f"Workflow failed: {error_msg}",
+            result={
+                "status": "error",
+                "error": error_msg,
+                "flow_id": str(flow_context.flow_run.id)
+            }
+        )
 
 @flow(name="intent_recovery")
 def run_recovery_workflow(
-    workflow_state: Dict[str, Any],
+    flow_run_id: str,
     config: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    Recovery workflow for handling failed runs.
-    Attempts to resume from last successful stage.
+    Recovery workflow for handling failed runs using Prefect states.
     """
-    # TODO: Implement recovery logic based on workflow state
-    pass
+    try:
+        # Get failed flow run state
+        flow_run = get_flow_context().client.read_flow_run(flow_run_id)
+        
+        if not flow_run.state.is_failed():
+            return Completed(
+                message="Flow run is not in failed state",
+                result={"status": "error", "error": "Flow is not failed"}
+            )
 
-@flow(name="intent_rollback")
-def run_rollback_workflow(
-    workflow_state: Dict[str, Any],
-    config: Dict[str, Any]
-) -> Dict[str, Any]:
-    """
-    Rollback workflow for reverting changes.
-    Uses backup information from workflow state.
-    """
-    # TODO: Implement rollback logic based on backup information
-    pass
+        # Extract failure point and data
+        failed_result = flow_run.state.result()
+        failed_stage = failed_result.get("stage")
+        
+        if not failed_stage:
+            return Failed(
+                message="Could not determine failure point",
+                result={"status": "error", "error": "Unknown failure point"}
+            )
+
+        # Resume from failed stage
+        # TODO: Implement stage-specific recovery logic
+        return Pending(message="Recovery not yet implemented")
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error("recovery_workflow.failed", error=error_msg)
+        return Failed(
+            message=f"Recovery failed: {error_msg}",
+            result={"status": "error", "error": error_msg}
+        )
