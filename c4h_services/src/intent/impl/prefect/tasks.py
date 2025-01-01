@@ -4,8 +4,8 @@ Path: c4h_services/src/intent/impl/prefect/tasks.py
 """
 
 from typing import Dict, Any, Type, Optional
-from dataclasses import dataclass
 from datetime import datetime
+from .models import AgentTaskConfig
 import structlog
 from prefect import task, get_run_logger
 from prefect.context import get_run_context
@@ -17,12 +17,7 @@ from c4h_agents.skills.shared.types import ExtractConfig
 
 logger = structlog.get_logger()
 
-@dataclass
-class AgentTaskConfig:
-    """Configuration for agent task execution"""
-    agent_class: Type[BaseAgent]
-    config: Dict[str, Any]
-    task_name: Optional[str] = None
+# AgentTaskConfig moved to models.py
 
 @task(retries=2, retry_delay_seconds=10)
 def run_agent_task(
