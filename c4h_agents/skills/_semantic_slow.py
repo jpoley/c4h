@@ -1,11 +1,11 @@
 """
 Slow extraction mode with lazy LLM calls.
-Path: src/skills/_semantic_slow.py
+Path: c4h_agents/skills/_semantic_slow.py
 """
 
 from typing import Dict, Any, Optional
 import structlog
-from agents.base import BaseAgent, LLMProvider, AgentResponse
+from agents.base import BaseAgent, AgentResponse
 from skills.shared.types import ExtractConfig
 import json
 from config import locate_config
@@ -22,7 +22,6 @@ class SlowItemIterator:
         self._config = config
         self._position = 0
         self._exhausted = False
-        self._has_items = False
         self._max_attempts = 100  # Safety limit
         self._returned_items = set()  # Track returned items
 
@@ -30,7 +29,7 @@ class SlowItemIterator:
         return self
 
     def __next__(self):
-        """Synchronous next implementation"""
+        """Get next item using lazy extraction"""
         if self._exhausted or self._position >= self._max_attempts:
             raise StopIteration
 
@@ -42,55 +41,49 @@ class SlowItemIterator:
                 'position': self._position
             })
 
-            if not result.success:
+            # Handle extraction result
+            if result.success:
+                content = result.data.get('response', '')
+                
+                # Handle NO_MORE_ITEMS as clean completion
+                if isinstance(content, str) and 'NO_MORE_ITEMS' in content:
+                    logger.debug("slow_extraction.complete", position=self._position)
+                    self._exhausted = True
+                    raise StopIteration
+
+                # Parse response if needed
+                try:
+                    if isinstance(content, str):
+                        # Handle potential markdown code blocks
+                        if content.startswith('```') and content.endswith('```'):
+                            content = content.split('```')[1]
+                            if content.startswith('json'):
+                                content = content[4:]
+                        content = json.loads(content)
+                except json.JSONDecodeError:
+                    pass  # Keep original string if not JSON
+                    
+                self._position += 1
+                return content
+
+            else:
                 logger.warning("slow_extraction.failed", 
                              error=result.error,
                              position=self._position)
                 self._exhausted = True
                 raise StopIteration
 
-            response = result.data.get('response', '')
-            
-            # Check for completion marker
-            if 'NO_MORE_ITEMS' in str(response):
-                logger.debug("slow_extraction.complete",
-                           position=self._position)
-                self._exhausted = True
-                raise StopIteration
-
-            # Parse response
-            try:
-                if isinstance(response, str):
-                    # Handle potential markdown code blocks
-                    if response.startswith('```') and response.endswith('```'):
-                        response = response.split('```')[1]
-                        if response.startswith('json'):
-                            response = response[4:]
-                    item = json.loads(response)
-                else:
-                    item = response
-            except json.JSONDecodeError as e:
-                logger.error("slow_extraction.parse_error", 
-                           error=str(e),
-                           position=self._position,
-                           response=response)
-                self._exhausted = True
-                raise StopIteration
-
-            self._position += 1
-            self._has_items = True
-            return item
-
         except Exception as e:
-            logger.error("slow_iteration.failed", 
-                        error=str(e), 
-                        position=self._position)
-            self._exhausted = True
+            if not isinstance(e, StopIteration):
+                logger.error("slow_iteration.failed", 
+                            error=str(e), 
+                            position=self._position)
             raise StopIteration
 
     def has_items(self) -> bool:
         """Check if iterator has returned any items"""
-        return self._has_items
+        return self._position > 0
+
 
 class SlowExtractor(BaseAgent):
     """Implements slow extraction mode using iterative LLM queries"""
@@ -102,7 +95,7 @@ class SlowExtractor(BaseAgent):
         # Get our config section
         slow_cfg = locate_config(self.config or {}, self._get_agent_name())
         
-        # Validate template at initialization only
+        # Validate template at initialization
         template = self._get_prompt('extract')
         if '{ordinal}' not in template:
             logger.error("slow_extractor.invalid_template", 
@@ -132,7 +125,7 @@ class SlowExtractor(BaseAgent):
         return extract_template.format(
             ordinal=ordinal,
             content=context.get('content', ''),
-            instruction=f"{instruction}\nIf no more items exist, respond exactly with 'NO_MORE_ITEMS'",
+            instruction=instruction,
             format=context['config'].format
         )
 
