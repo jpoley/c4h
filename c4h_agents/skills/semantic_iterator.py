@@ -1,18 +1,18 @@
 """
-Semantic iterator with standardized BaseAgent implementation.
+Semantic iterator with configurable extraction modes.
 Path: c4h_agents/skills/semantic_iterator.py
 """
 
-from typing import List, Dict, Any, Optional, Iterator, Union
+from typing import List, Dict, Any, Optional, Iterator, Union, Literal
+from enum import Enum
 import structlog
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from config import locate_config
 from agents.base import BaseAgent, AgentResponse
 from skills.shared.types import ExtractConfig
-from skills._semantic_fast import FastExtractor
-from skills._semantic_slow import SlowExtractor
-from enum import Enum
+from skills._semantic_fast import FastExtractor, FastItemIterator
+from skills._semantic_slow import SlowExtractor, SlowItemIterator
 
 logger = structlog.get_logger()
 
@@ -22,59 +22,49 @@ class ExtractionMode(str, Enum):
     SLOW = "slow"      # Sequential item-by-item extraction
 
 @dataclass
-class ExtractorState:
-    """Internal state for extraction process"""
-    mode: str
-    position: int = 0
-    content: Any = None
-    config: Optional[ExtractConfig] = None
-    current_items: Optional[List[Any]] = None
+class ExtractorConfig:
+    """Configuration requirements for extraction behavior"""
+    mode: str = "fast"
+    allow_fallback: bool = True
+    fallback_modes: List[str] = field(default_factory=lambda: ["slow"])
+    batch_size: int = 100
+    timeout: int = 30
 
 class SemanticIterator(BaseAgent):
-    """
-    Agent responsible for semantic extraction using configurable modes.
-    Follows standard BaseAgent pattern while maintaining iterator protocol.
-    """
+    """Coordinates semantic extraction using configurable modes"""
     
     def __init__(self, config: Dict[str, Any] = None):
         """Initialize iterator with configuration."""
         super().__init__(config=config)
         
-        # Get iterator-specific config
-        iterator_config = locate_config(self.config or {}, self._get_agent_name())
-        extractor_config = iterator_config.get('extractor_config', {})
+        # Get iterator config using locate_config
+        iterator_cfg = locate_config(self.config or {}, self._get_agent_name())
         
-        # Initialize extraction state
-        self._state = ExtractorState(
-            mode=extractor_config.get('mode', 'fast'),
-            position=0
-        )
+        # Get extractor config settings
+        extractor_cfg = iterator_cfg.get('extractor_config', {})
+        self.extractor_config = ExtractorConfig(**extractor_cfg)
         
-        # Configure extractors
-        self._allow_fallback = extractor_config.get('allow_fallback', True)
+        # Initialize processing state
+        self._content = None
+        self._extract_config = None
+        self._position = 0
+        self._current_items = None
+        self._current_mode = self.extractor_config.mode
+
+        # Initialize extractors with same base config
         self._fast_extractor = FastExtractor(config=config)
         self._slow_extractor = SlowExtractor(config=config)
-        
+
         logger.info("semantic_iterator.initialized",
-                   mode=self._state.mode,
-                   allow_fallback=self._allow_fallback)
+                   mode=self._current_mode,
+                   allow_fallback=self.extractor_config.allow_fallback)
 
     def _get_agent_name(self) -> str:
         """Get agent name for config lookup"""
         return "semantic_iterator"
 
     def process(self, context: Dict[str, Any]) -> AgentResponse:
-        """
-        Process extraction request following standard agent interface.
-        
-        Args:
-            context: Must contain either:
-                - input_data with content and instruction
-                - content and instruction directly
-                
-        Returns:
-            AgentResponse with extracted items in data["results"]
-        """
+        """Process using standard BaseAgent interface."""
         try:
             # Extract parameters from context
             if isinstance(context.get('input_data'), dict):
@@ -87,38 +77,24 @@ class SemanticIterator(BaseAgent):
                 instruction = context.get('instruction', '')
                 format_hint = context.get('format', 'json')
 
-            # Initialize extraction config
-            extract_config = ExtractConfig(
-                instruction=instruction,
-                format=format_hint
-            )
-            
-            # Set up state for iteration
-            self._state = ExtractorState(
-                mode=self._state.mode,
+            # Use configure() to maintain compatibility
+            self.configure(
                 content=content,
-                config=extract_config
+                config=ExtractConfig(
+                    instruction=instruction,
+                    format=format_hint
+                )
             )
-            
+
             # Get all results using iterator protocol
             results = []
-            try:
-                iterator = iter(self)
-                while True:
-                    results.append(next(iterator))
-            except StopIteration:
-                pass
-            
-            if not results:
-                return AgentResponse(
-                    success=False,
-                    data={},
-                    error="No items could be extracted"
-                )
-                
+            for item in self:
+                results.append(item)
+
             return AgentResponse(
-                success=True,
-                data={"results": results}
+                success=bool(results),
+                data={"results": results},
+                error="No items extracted" if not results else None
             )
 
         except Exception as e:
@@ -130,94 +106,62 @@ class SemanticIterator(BaseAgent):
             )
 
     def configure(self, content: Any, config: ExtractConfig) -> 'SemanticIterator':
-        """
-        Legacy configuration method for backward compatibility.
-        
-        Args:
-            content: Content to extract from
-            config: Extraction configuration
-            
-        Returns:
-            Self for chaining
-        """
-        logger.warning("semantic_iterator.using_deprecated_configure")
-        self._state = ExtractorState(
-            mode=self._state.mode,
-            content=content,
-            config=config
-        )
-        return self
-
-    def __iter__(self) -> Iterator[Any]:
-        """Initialize iteration in configured mode"""
-        logger.debug("iterator.starting", mode=self._state.mode)
-        
-        if not self._state.content or not self._state.config:
-            raise ValueError("Iterator not configured. Call process() first.")
-        
-        if self._state.mode == ExtractionMode.FAST:
-            # Try fast extraction first
-            self._state.current_items = self._fast_extractor.process({
-                'content': self._state.content,
-                'config': self._state.config
-            })
-            
-            if not self._state.current_items.success and self._allow_fallback:
-                logger.info("extraction.fallback_to_slow")
-                self._state.mode = ExtractionMode.SLOW
-                
-        self._state.position = 0
-        return self
-
-    def __next__(self) -> Any:
-        """Get next item using current extraction mode"""
+        """Configure iterator for use."""
         try:
-            if self._state.mode == ExtractionMode.FAST:
-                return self._next_fast()
-            else:
-                return self._next_slow()
+            self._content = content
+            self._extract_config = config
+            self._position = 0
+            self._current_items = None
+            self._current_mode = self.extractor_config.mode
+            
+            logger.info("iterator.configured",
+                       mode=self._current_mode,
+                       content_type=type(content).__name__)
+            
+            return self
+            
+        except Exception as e:
+            logger.error("iterator.configure_failed", error=str(e))
+            raise
+
+    def __iter__(self):
+        """Initialize iteration based on configured mode"""
+        logger.debug("iterator.starting", mode=self._current_mode)
+        
+        if self._current_mode == "fast":
+            self._current_items = self._fast_extractor.create_iterator(
+                self._content,
+                self._extract_config
+            )
+            if not self._current_items.has_items() and self.extractor_config.allow_fallback:
+                logger.info("extraction.fallback_to_slow")
+                self._current_mode = "slow"
+        
+        if self._current_mode == "slow":
+            self._current_items = self._slow_extractor.create_iterator(
+                self._content,
+                self._extract_config
+            )
+            
+        self._position = 0
+        return self
+
+    def __next__(self):
+        """Get next item based on current mode"""
+        try:
+            if not self._current_items:
+                raise StopIteration
+                
+            return next(self._current_items)
+                
+        except StopIteration:
+            logger.info("iterator.complete",
+                       mode=self._current_mode,
+                       items_processed=self._position)
+            raise
         except Exception as e:
             logger.error("iterator.next_failed",
                         error=str(e),
-                        mode=self._state.mode,
-                        position=self._state.position)
+                        mode=self._current_mode,
+                        position=self._position)
             raise StopIteration
-
-    def _next_fast(self) -> Any:
-        """Handle fast mode iteration"""
-        if not self._state.current_items:
-            raise StopIteration
-
-        # Handle both direct array responses and nested results
-        data = self._state.current_items.data
-        if isinstance(data, dict):
-            results = data.get('results', [])
-        elif isinstance(data.get('response'), list):
-            results = data['response']
-        else:
-            results = []
-            
-        if self._state.position >= len(results):
-            raise StopIteration
-            
-        item = results[self._state.position]
-        self._state.position += 1
-        return item
-
-    def _next_slow(self) -> Any:
-        """Handle slow mode iteration"""
-        response = self._slow_extractor.process({
-            'content': self._state.content,
-            'config': self._state.config,
-            'position': self._state.position
-        })
-        
-        if not response.success:
-            raise StopIteration
-            
-        content = response.data.get('response', '')
-        if 'NO_MORE_ITEMS' in str(content):
-            raise StopIteration
-            
-        self._state.position += 1
-        return content

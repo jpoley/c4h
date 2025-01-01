@@ -3,21 +3,17 @@ Prefect task wrapper for agent execution.
 Path: c4h_services/src/intent/impl/prefect/tasks.py
 """
 
-from typing import Dict, Any, Type, Optional
-from datetime import datetime
-from .models import AgentTaskConfig
+from typing import Dict, Any, Optional
 import structlog
 from prefect import task, get_run_logger
-from prefect.context import get_run_context
 from pathlib import Path
 
 from c4h_agents.agents.base import BaseAgent
 from c4h_agents.skills.semantic_iterator import SemanticIterator
 from c4h_agents.skills.shared.types import ExtractConfig
+from .models import AgentTaskConfig
 
 logger = structlog.get_logger()
-
-# AgentTaskConfig moved to models.py
 
 @task(retries=2, retry_delay_seconds=10)
 def run_agent_task(
@@ -25,9 +21,7 @@ def run_agent_task(
     context: Dict[str, Any],
     task_name: Optional[str] = None
 ) -> Dict[str, Any]:
-    """
-    Prefect task wrapper for agent execution.
-    """
+    """Prefect task wrapper for agent execution."""
     prefect_logger = get_run_logger()
     
     try:
@@ -57,27 +51,17 @@ def run_agent_task(
                 format=format_hint
             )
             
-            prefect_logger.info(f"Configuring iterator with format: {format_hint}")
-            
-            agent.configure(
-                content=content,
-                config=extract_config
-            )
-            
-            # Collect all items
+            # Use iterator directly like testharness
+            agent.configure(content=content, config=extract_config)
             results = []
-            try:
-                for item in agent:
-                    results.append(item)
-                    prefect_logger.info(f"Extracted item {len(results)}")
-            except StopIteration:
-                if not results:
-                    raise ValueError("No items could be extracted")
+            for item in agent:
+                results.append(item)
+                prefect_logger.info(f"Extracted item: {item}")
 
             return {
-                "success": True,
+                "success": bool(results),
                 "result_data": {"results": results},
-                "error": None
+                "error": None if results else "No items extracted"
             }
             
         # Standard agent execution
