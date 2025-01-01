@@ -5,7 +5,7 @@ llm_config:
     semantic_iterator:
       temperature: 0
       extractor_config:
-        mode: "slow"
+        mode: "fast"
         allow_fallback: true
 
 input_data: |
