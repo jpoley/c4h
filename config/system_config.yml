@@ -62,6 +62,11 @@ llm_config:
       default_provider: "anthropic"
       default_model: "claude-3-5-sonnet-20241022"  # Fixed hyphenation
       temperature: 0
+      tartxt_config:
+        # Override the hardcoded src/skills path
+        script_base_path: "c4h_agents/skills"  # This gets merged with 'tartxt.py' in the code
+        input_paths: ["./"]
+        exclusions: ["**/__pycache__/**"]
       prompts:
         system: |
           You are a project discovery agent.

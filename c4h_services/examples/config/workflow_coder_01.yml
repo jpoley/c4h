@@ -1,7 +1,7 @@
 # Path: c4h_services/examples/config/workflow_coder_01.yml
 
 # Project settings
-project_path: "./tests/test_projects/"  # Using existing test project
+project_path: "./tests/test_projects/"  # Using test project
 
 # Intent description
 intent:
@@ -10,17 +10,23 @@ intent:
     - "Replace print statements with logging"
     - "Add logging configuration"
 
-# Backup settings (for coder)
-backup:
-  enabled: true
-  path: "workspaces/backups"
-
-# Optional: Override specific agent settings
+# Discovery agent configuration
 llm_config:
   agents:
     discovery:
-      temperature: 0  # Be precise for discovery
+      temperature: 0
+      tartxt_config:
+        script_path: "./c4h_agents/skills/tartxt.py"  # Explicit path to tartxt.py
+        input_paths: ["./"]  # Scan everything in project path
+        exclusions: ["**/__pycache__/**"]  # Skip cache directories
+
     solution_designer:
-      temperature: 0.1  # Allow slight creativity
+      temperature: 0.1
+
     coder:
-      temperature: 0  # Be precise for code changes
+      temperature: 0
+
+# Backup settings
+backup:
+  enabled: true
+  path: "workspaces/backups"

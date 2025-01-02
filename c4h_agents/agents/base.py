@@ -9,12 +9,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 import asyncio
-from typing import Dict, Any, Optional, List, Literal
+from typing import Dict, Any, Optional, List, Literal, Tuple
 from functools import wraps
 import time
 import litellm
 from litellm import completion
-from config import locate_config
+from config import locate_config, locate_keys
+import json
 
 logger = structlog.get_logger()
 
@@ -240,6 +241,70 @@ class BaseAgent:
     def _get_agent_name(self) -> str:
         """Get agent name for config lookup"""
         pass
+        
+    def _get_required_keys(self) -> List[str]:
+        """
+        Define keys required by this agent.
+        Override in subclasses to specify required input keys.
+        """
+        return []
+
+    def _locate_data(self, data: Dict[str, Any], keys: List[str]) -> Dict[str, Tuple[Any, List[str]]]:
+        """
+        Locate multiple required keys in input data.
+        Uses same pattern as config location.
+        
+        Args:
+            data: Data to search
+            keys: List of required keys
+            
+        Returns:
+            Dict mapping keys to (value, path) tuples
+        """
+        return locate_keys(data, keys)
+
+    def _get_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract required data using key discovery with JSON parsing.
+        Each agent specifies its required keys.
+        
+        Returns:
+            Dict of found values with proper parsing
+        """
+        required = self._get_required_keys()
+        if not required:
+            return context
+            
+        try:
+            results = {}
+            located = locate_keys(context, required)
+            
+            for key, (value, path) in located.items():
+                # Handle string JSON values
+                if isinstance(value, str):
+                    try:
+                        parsed = json.loads(value)
+                        results[key] = parsed
+                        continue
+                    except json.JSONDecodeError:
+                        pass
+                        
+                # Use value as-is if not JSON string
+                results[key] = value
+                
+                if self._should_log(LogDetail.DEBUG):
+                    logger.debug("agent.data_extracted",
+                               key=key,
+                               path=path,
+                               value_type=type(results[key]).__name__)
+                               
+            return results
+            
+        except Exception as e:
+            logger.error("agent.data_extraction_failed",
+                        error=str(e),
+                        required_keys=required)
+            return {}
 
     def _get_system_message(self) -> str:
         """Get system message from config"""
@@ -275,9 +340,12 @@ class BaseAgent:
                 logger.info("agent.processing",
                           context_keys=list(context.keys()) if context else None)
 
+            # Get required data using discovery pattern
+            data = self._get_data(context)
+            
             # Format request before sending
             system_message = self._get_system_message()
-            user_message = self._format_request(context)
+            user_message = self._format_request(data)
             
             # Log the complete prompt
             logger.info("llm.prompt",
@@ -321,7 +389,6 @@ class BaseAgent:
                         content_length=len(content) if content else 0,
                         response_type=type(raw_response).__name__)
             
-            # Add raw response logging
             logger.info("llm.raw_response",
                     content=content,
                     response=str(raw_response),

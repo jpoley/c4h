@@ -93,6 +93,8 @@ class DiscoveryAgent(BaseAgent):
                     
         return resolved_paths
 
+    """Update to _run_tartxt method in discovery.py"""
+
     def _run_tartxt(self, project_path: str) -> DiscoveryResult:
         try:
             # Convert to Path and resolve
@@ -101,8 +103,16 @@ class DiscoveryAgent(BaseAgent):
             # Get resolved input paths
             input_paths = self._resolve_input_paths(base_path)
             
-            # Build tartxt command
-            cmd = [sys.executable, "src/skills/tartxt.py"]
+            # Get tartxt script path - fail fast if not configured
+            script_path = self.tartxt_config.get('script_path')
+            if not script_path:
+                raise ValueError("tartxt_config must include 'script_path'")
+                
+            if not Path(script_path).is_file():
+                raise ValueError(f"tartxt script not found at: {script_path}")
+            
+            # Build tartxt command with configured script path
+            cmd = [sys.executable, str(Path(script_path).resolve())]
             
             # Add exclusions
             for exclude in self.tartxt_config.get('exclusions', []):
@@ -120,7 +130,8 @@ class DiscoveryAgent(BaseAgent):
             logger.debug("discovery.tartxt_command",
                         cmd=cmd,
                         paths=input_paths,
-                        project_path=str(base_path))
+                        project_path=str(base_path),
+                        script_path=script_path)
 
             # Run tartxt with stdout capture  
             result = subprocess.run(
@@ -148,7 +159,17 @@ class DiscoveryAgent(BaseAgent):
                 project_path=str(base_path),
                 error=str(e)
             )
-    
+        except ValueError as e:
+            logger.error("discovery.config_error",
+                        error=str(e))
+            return DiscoveryResult(
+                success=False,
+                files={},
+                raw_output="",
+                project_path=str(base_path),
+                error=str(e)
+            )
+     
     def process(self, context: Dict[str, Any]) -> AgentResponse:
         """Process a project discovery request."""
         try:

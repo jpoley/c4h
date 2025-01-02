@@ -1,15 +1,125 @@
 """
-Configuration handling with robust dictionary merging and comprehensive logging.
-Path: src/config.py
+Configuration handling with robust dictionary access and path resolution.
+Path: c4h_agents/config.py
 """
 import yaml
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 import structlog
 from copy import deepcopy
 import collections.abc
+import json
 
 logger = structlog.get_logger()
+
+def get_by_path(data: Dict[str, Any], path: List[str]) -> Any:
+    """
+    Access dictionary data using a path list.
+    
+    Args:
+        data: Dictionary to traverse
+        path: List of keys forming the path
+        
+    Returns:
+        Value at path or None if not found
+    """
+    try:
+        current = data
+        for key in path:
+            if isinstance(current, dict):
+                if key not in current:
+                    return None
+                current = current[key]
+            elif isinstance(current, str):
+                # If we hit a string, try to parse as JSON first
+                try:
+                    parsed = json.loads(current)
+                    if isinstance(parsed, dict) and key in parsed:
+                        current = parsed[key]
+                    else:
+                        return None
+                except json.JSONDecodeError:
+                    return None
+            else:
+                return None
+        return current
+    except Exception as e:
+        logger.error("config.path_access_failed", 
+                    path=path,
+                    error=str(e))
+        return None
+
+def locate_keys(data: Dict[str, Any], target_keys: List[str], current_path: List[str] = None) -> Dict[str, Tuple[Any, List[str]]]:
+    """
+    Locate multiple keys in dictionary using hierarchy tracking.
+    
+    Args:
+        data: Dictionary to search
+        target_keys: List of keys to find
+        current_path: Path for logging (internal use)
+        
+    Returns:
+        Dict mapping found keys to (value, path) tuples
+    """
+    try:
+        results = {}
+        current_path = current_path or []
+        
+        if isinstance(data, dict):
+            # Direct matches first
+            for key in target_keys:
+                if key in data:
+                    value = data[key]
+                    path = current_path + [key]
+                    
+                    # If value is a string, try parsing as JSON
+                    if isinstance(value, str):
+                        try:
+                            parsed = json.loads(value)
+                            value = parsed
+                        except json.JSONDecodeError:
+                            # Keep original if not valid JSON
+                            pass
+                            
+                    results[key] = (value, path)
+                    logger.debug("config.key_located",
+                               key=key,
+                               path=path,
+                               found_type=type(value).__name__)
+                    
+            # Then recurse into nested structures
+            for k, v in data.items():
+                if isinstance(v, (dict, list)):
+                    child_results = locate_keys(v, 
+                                             [k for k in target_keys if k not in results],
+                                             current_path + [k])
+                    results.update(child_results)
+                    
+        elif isinstance(data, list):
+            # Search list items
+            for i, item in enumerate(data):
+                if isinstance(item, (dict, list)):
+                    child_results = locate_keys(item,
+                                             [k for k in target_keys if k not in results],
+                                             current_path + [str(i)])
+                    results.update(child_results)
+                    
+        # Log any missing keys
+        found_keys = set(results.keys())
+        missing_keys = set(target_keys) - found_keys
+        if missing_keys:
+            logger.debug("config.keys_not_found",
+                        keys=list(missing_keys),
+                        searched_path=current_path)
+                        
+        return results
+
+    except Exception as e:
+        logger.error("config.locate_keys_failed",
+                    target_keys=target_keys,
+                    current_path=current_path,
+                    error=str(e))
+        return {}
 
 def locate_config(config: Dict[str, Any], target_name: str) -> Dict[str, Any]:
     """
@@ -24,20 +134,20 @@ def locate_config(config: Dict[str, Any], target_name: str) -> Dict[str, Any]:
         Located config dictionary or empty dict if not found
     """
     try:
-        # Use standard hierarchical path
-        if 'llm_config' in config:
-            agents_config = config['llm_config'].get('agents', {})
-            if target_name in agents_config:
-                agent_config = agents_config[target_name]
+        standard_path = ['llm_config', 'agents', target_name]
+        result = get_by_path(config, standard_path)
+        
+        if result is not None:
+            if isinstance(result, dict):
                 logger.debug("config.located_in_hierarchy", 
                            target=target_name,
-                           path=['llm_config', 'agents', target_name],
-                           found_keys=list(agent_config.keys()))
-                return agent_config
-
+                           path=standard_path,
+                           found_keys=list(result.keys()))
+                return result
+                
         logger.warning("config.not_found_in_hierarchy",
                       target=target_name,
-                      searched_path=['llm_config', 'agents', target_name])
+                      searched_path=standard_path)
         return {}
 
     except Exception as e:
@@ -168,3 +278,4 @@ def load_with_app_config(system_path: Path, app_path: Path) -> Dict[str, Any]:
                     error=str(e),
                     error_type=type(e).__name__)
         return {}
+    

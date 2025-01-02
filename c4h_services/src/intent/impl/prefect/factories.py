@@ -12,10 +12,14 @@ from c4h_agents.agents.assurance import AssuranceAgent
 
 def create_discovery_task(config: Dict[str, Any]) -> AgentTaskConfig:
     """Create discovery agent task configuration."""
+    # Get discovery-specific config
+    discovery_config = config.get("llm_config", {}).get("agents", {}).get("discovery", {})
+    
     agent_config = {
         "llm_config": config.get("llm_config", {}),
         "logging": config.get("logging", {}),
-        "providers": config.get("providers", {})
+        "providers": config.get("providers", {}),
+        "tartxt_config": discovery_config.get("tartxt_config", {})  # Pass through TarTXT config
     }
     
     return AgentTaskConfig(
