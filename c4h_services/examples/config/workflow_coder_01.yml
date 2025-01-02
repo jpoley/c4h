@@ -1,0 +1,26 @@
+# Path: c4h_services/examples/config/workflow_coder_01.yml
+
+# Project settings
+project_path: "./tests/test_projects/"  # Using existing test project
+
+# Intent description
+intent:
+  description: "Add logging to all functions"
+  requirements:
+    - "Replace print statements with logging"
+    - "Add logging configuration"
+
+# Backup settings (for coder)
+backup:
+  enabled: true
+  path: "workspaces/backups"
+
+# Optional: Override specific agent settings
+llm_config:
+  agents:
+    discovery:
+      temperature: 0  # Be precise for discovery
+    solution_designer:
+      temperature: 0.1  # Allow slight creativity
+    coder:
+      temperature: 0  # Be precise for code changes

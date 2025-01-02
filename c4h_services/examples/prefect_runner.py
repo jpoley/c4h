@@ -1,11 +1,11 @@
 """
-Prefect-enabled test runner for individual agent execution.
+Extended Prefect runner supporting both individual agents and full workflow execution.
 Path: c4h_services/examples/prefect_runner.py
 """
 
 import sys
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Literal
 import structlog
 import argparse
 from prefect import flow
@@ -28,32 +28,35 @@ from c4h_agents.skills.asset_manager import AssetManager
 from c4h_agents.config import deep_merge
 
 from c4h_services.src.intent.impl.prefect.tasks import AgentTaskConfig, run_agent_task
+from c4h_services.src.intent.impl.prefect.workflows import run_basic_workflow
+from c4h_services.src.intent.impl.prefect.factories import (
+    create_discovery_task,
+    create_solution_task,
+    create_coder_task,
+    create_assurance_task
+)
 
 logger = structlog.get_logger()
 
-# Agent registry
+class RunMode(str, Enum):
+    """Execution modes supported by runner"""
+    AGENT = "agent"     # Run single agent/skill
+    WORKFLOW = "workflow"  # Run full workflow
+
+class LogMode(str, Enum):
+    """Logging modes supported by runner"""
+    DEBUG = "debug"     
+    NORMAL = "normal"   
+
+# Agent registry for individual runs
 AGENT_REGISTRY = {
-    "discovery": lambda config: AgentTaskConfig(
-        agent_class=DiscoveryAgent,
-        config=config,
-        task_name="discovery"
-    ),
-    "solution_designer": lambda config: AgentTaskConfig(
-        agent_class=SolutionDesigner,
-        config=config,
-        task_name="solution_design"
-    ),
-    "coder": lambda config: AgentTaskConfig(
-        agent_class=Coder,
-        config=config,
-        task_name="coder"
-    ),
-    "assurance": lambda config: AgentTaskConfig(
-        agent_class=AssuranceAgent,
-        config=config,
-        task_name="assurance"
-    ),
-    # Add custom configs for skills
+    # Core Agents
+    "discovery": lambda config: create_discovery_task(config),
+    "solution_designer": lambda config: create_solution_task(config),
+    "coder": lambda config: create_coder_task(config),
+    "assurance": lambda config: create_assurance_task(config),
+    
+    # Semantic Skills
     "semantic_iterator": lambda config: AgentTaskConfig(
         agent_class=SemanticIterator,
         config={
@@ -79,11 +82,6 @@ AGENT_REGISTRY = {
         task_name="asset_manager"
     )
 }
-
-class LogMode(str, Enum):
-    """Logging modes supported by runner"""
-    DEBUG = "debug"     
-    NORMAL = "normal"   
 
 def load_configs(config_path: str) -> Dict[str, Any]:
     """Load and merge configurations"""
@@ -112,31 +110,29 @@ def load_configs(config_path: str) -> Dict[str, Any]:
         logger.error("config.load_failed", error=str(e))
         raise
 
-def format_output(data: Dict[str, Any]) -> None:
+def format_output(data: Dict[str, Any], mode: RunMode) -> None:
     """Format task output for display"""
     print("\n=== Results ===\n")
     
+    def print_value(value: Any, indent: int = 0) -> None:
+        """Print a value, preserving formatting"""
+        spaces = " " * indent
+        if isinstance(value, dict):
+            for k, v in value.items():
+                print(f"{spaces}{k}:")
+                print_value(v, indent + 4)
+        elif isinstance(value, list):
+            for item in value:
+                print_value(item, indent + 4)
+        else:
+            # Print string with original formatting
+            print(f"{spaces}{value}")
+    
     try:
-        if data.get("success"):
+        if data.get("success", False):
+            # Print all result data with consistent indentation
             result_data = data.get("result_data", {})
-            
-            # Handle array results
-            if "results" in result_data:
-                for item in result_data["results"]:
-                    if isinstance(item, dict):
-                        for key in ["file_path", "type", "description"]:
-                            if key in item:
-                                print(f"{key.title()}: {item[key]}")
-                        if "content" in item:
-                            print("\nContent:")
-                            print(item["content"])
-                        print("-" * 80)
-                    else:
-                        print(item)
-                        print("-" * 80)
-            else:
-                # Handle single result
-                print(result_data)
+            print_value(result_data)
         else:
             print(f"Error: {data.get('error', 'Unknown error')}")
             
@@ -144,42 +140,40 @@ def format_output(data: Dict[str, Any]) -> None:
         logger.error("output.format_failed", error=str(e))
         print(str(data))
 
-@flow(name="agent_test")
-def run_test_flow(
-    agent_type: str,
-    config_path: str,
+@flow(name="prefect_runner")
+def run_flow(
+    mode: RunMode,
+    config: Dict[str, Any],
+    agent_type: Optional[str] = None,
     extra_params: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    """Test flow for running individual agents"""
+    """Main flow for running agents or workflows"""
     try:
-        # Load config
-        config = load_configs(config_path)
-        
-        # Get agent task config
-        if agent_type not in AGENT_REGISTRY:
-            raise ValueError(f"Unsupported agent type: {agent_type}")
+        if mode == RunMode.AGENT:
+            if not agent_type or agent_type not in AGENT_REGISTRY:
+                raise ValueError(f"Invalid agent type: {agent_type}")
+                
+            # Run single agent
+            task_config = AGENT_REGISTRY[agent_type](config)
+            context = {"input_data": config.get("input_data", {})}
+            if extra_params:
+                context.update(extra_params)
+                
+            return run_agent_task(
+                agent_config=task_config,
+                context=context,
+                task_name=f"test_{agent_type}"
+            )
+        else:
+            # Run full workflow
+            return run_basic_workflow(
+                project_path=Path(config.get("project_path", ".")),
+                intent_desc=config.get("intent", {}),
+                config=config
+            )
             
-        task_config = AGENT_REGISTRY[agent_type](config)
-        
-        # Build context
-        context = {"input_data": config.get("input_data", {})}
-        if extra_params:
-            context.update(extra_params)
-            
-        # Run agent task
-        result = run_agent_task(
-            agent_config=task_config,
-            context=context,
-            task_name=f"test_{agent_type}"
-        )
-        
-        # Display result
-        format_output(result)
-        
-        return result
-        
     except Exception as e:
-        logger.error("test_flow.failed", error=str(e))
+        logger.error("runner.failed", error=str(e))
         return {
             "success": False,
             "error": str(e),
@@ -188,12 +182,24 @@ def run_test_flow(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Prefect test runner for agents/skills"
+        description="Prefect runner for agents and workflows"
     )
     parser.add_argument(
-        "agent_type",
-        choices=AGENT_REGISTRY.keys(),
-        help="Type of agent/skill to test"
+        "mode",
+        type=RunMode,
+        choices=list(RunMode),
+        help="Run mode (agent or workflow)"
+    )
+    # Define agent groups for better help display
+    agent_choices = list(AGENT_REGISTRY.keys())
+    parser.add_argument(
+        "--agent",
+        choices=agent_choices,
+        metavar="AGENT",
+        help=f"""Agent type (required for agent mode). Available agents:
+                Core Agents: {', '.join(a for a in agent_choices if not a.startswith('semantic_'))}
+                Semantic Skills: {', '.join(a for a in agent_choices if a.startswith('semantic_'))}
+                Other Skills: {', '.join(a for a in agent_choices if not a.startswith('semantic_') and a not in ['discovery', 'solution_designer', 'coder', 'assurance'])}"""
     )
     parser.add_argument(
         "--config",
@@ -217,20 +223,30 @@ def main():
     args = parser.parse_args()
     
     try:
+        if args.mode == RunMode.AGENT and not args.agent:
+            parser.error("Agent type is required for agent mode")
+            
         # Parse additional parameters
         extra_params = {}
         for param in args.param:
             key, value = param.split("=", 1)
             extra_params[key.strip()] = value.strip()
 
-        # Run test flow
-        result = run_test_flow(
-            agent_type=args.agent_type,
-            config_path=args.config,
+        # Load config
+        config = load_configs(args.config)
+
+        # Run flow
+        result = run_flow(
+            mode=args.mode,
+            config=config,
+            agent_type=args.agent,
             extra_params=extra_params
         )
         
-        if not result["success"]:
+        # Display results
+        format_output(result, args.mode)
+        
+        if not result.get("success", False):
             sys.exit(1)
             
     except Exception as e:
