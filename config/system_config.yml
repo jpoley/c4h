@@ -206,8 +206,8 @@ llm_config:
           CRITICAL: Return raw JSON only. Do not wrap in code blocks or markdown.
 
     semantic_slow_extractor:
-      provider: "openai"
-      model: "gpt-4o" 
+      provider: "anthropic"
+      model:  "claude-3-5-sonnet-20241022"
       temperature: 0
       prompts:
         system: |

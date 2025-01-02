@@ -16,6 +16,14 @@ from enum import Enum
 
 logger = structlog.get_logger()
 
+class ExtractionComplete(StopIteration):
+    """Custom exception to signal clean completion of extraction"""
+    pass
+
+class ExtractionError(Exception):
+    """Custom exception for extraction errors"""
+    pass
+
 class ExtractionMode(str, Enum):
     """Available extraction modes"""
     FAST = "fast"      # Direct extraction from structured data
@@ -198,29 +206,34 @@ class SemanticIterator(BaseAgent):
                 return self._next_fast()
             else:
                 return self._next_slow()
-        except Exception as e:
-            logger.error("iterator.next_failed",
-                        error=str(e),
+        except ExtractionComplete:
+            logger.debug("iterator.complete", 
                         mode=self._state.mode,
                         position=self._state.position)
             raise StopIteration
+        except Exception as e:
+            logger.error("iterator.error",
+                        error=str(e),
+                        mode=self._state.mode,
+                        position=self._state.position)
+            raise ExtractionError(str(e))
 
     def _next_fast(self) -> Any:
         """Handle fast mode iteration"""
         if not self._state.current_items:
             logger.debug("fast_iteration.no_items")
-            raise StopIteration
+            raise ExtractionComplete()
 
         if isinstance(self._state.current_items, list):
             items = self._state.current_items
         else:
             logger.error("fast_iteration.invalid_items_type", 
                         type=type(self._state.current_items).__name__)
-            raise StopIteration
+            raise ExtractionComplete()
             
         if self._state.position >= len(items):
             logger.debug("fast_iteration.complete", total_items=len(items))
-            raise StopIteration
+            raise ExtractionComplete()
             
         item = items[self._state.position]
         self._state.position += 1
@@ -239,11 +252,11 @@ class SemanticIterator(BaseAgent):
         })
         
         if not response.success:
-            raise StopIteration
+            raise ExtractionError(response.error or "Extraction failed")
             
         content = response.data.get('response', '')
-        if 'NO_MORE_ITEMS' in str(content):
-            raise StopIteration
+        if isinstance(content, str) and 'NO_MORE_ITEMS' in content:
+            raise ExtractionComplete()
             
         self._state.position += 1
         return content
