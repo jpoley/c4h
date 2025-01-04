@@ -7,7 +7,7 @@ llm_config:
       model: "claude-3-opus-20240229"
       temperature: 0
       extractor_config:
-        mode: "fast"
+        mode: "slow"
         allow_fallback: false
 
     semantic_fast_extractor:
@@ -21,8 +21,7 @@ llm_config:
       temperature: 0
 
 # Same input_data as coder config
-input_data:
-  changes: |
+input_data: |
     {
       "changes": [
         {
@@ -47,27 +46,11 @@ input_data:
     }
 
 instruction: |
-    "You are extracting change items sequentially. Current position: {ordinal}
-
-    Context: You have a list of code changes to process one at a time.
-    Task: Extract ONLY the {ordinal} change action or signal completion.
-
-    Content to analyze:
-    {content}
-
-    Rules:
-    1. Return EXACTLY ONE of these:
-      - A single change object with the exact schema below 
-      - The exact string 'NO_MORE_ITEMS' if position {ordinal} exceeds available changes
+    "You are extracting change items 
 
     Change object schema:
     1. file_path: Path of the file to modify  
     2. type: One of \"modify\", \"create\", or \"delete\"
     3. content: The complete new content (if available)
     4. diff: Git-style diff (if content not available)  
-    5. description: Clear description of the change
-
-    Additional instructions:
-    {instruction}
-
-    NOTE: Do not look ahead or behind - focus only on the {ordinal} item."
+    5. description: Clear description of the change"

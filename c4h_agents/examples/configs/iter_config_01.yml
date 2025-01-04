@@ -33,4 +33,3 @@ instruction: |
   Position 3 = NO_MORE_ITEMS (exceeds total birds)
 
   Format: Either a single JSON object for the bird, or exactly "NO_MORE_ITEMS"
-format: "json"

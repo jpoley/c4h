@@ -84,16 +84,12 @@ class SemanticIterator(BaseAgent):
             AgentResponse with extracted items in data["results"]
         """
         try:
-            # Extract parameters from context
-            if isinstance(context.get('input_data'), dict):
-                input_data = context['input_data']
-                content = input_data.get('content', input_data)
-                instruction = input_data.get('instruction', '')
-                format_hint = input_data.get('format', 'json')
-            else:
-                content = context.get('content', context.get('input_data', ''))
-                instruction = context.get('instruction', '')
-                format_hint = context.get('format', 'json')
+            # Just pass through all content to LLM
+            content = context.get('input_data', context)
+            if isinstance(content, dict):
+                content = json.dumps(content, indent=2)
+            instruction = context.get('instruction', '')
+            format_hint = context.get('format', 'json')
 
             # Initialize extraction config
             extract_config = ExtractConfig(
@@ -111,9 +107,10 @@ class SemanticIterator(BaseAgent):
             # Get all results using iterator protocol
             results = []
             try:
-                iterator = iter(self)
-                while True:
-                    results.append(next(iterator))
+                for item in self:  # Use self as iterator
+                    if item == "NO_MORE_ITEMS":
+                        break
+                    results.append(item)
             except StopIteration:
                 pass
             
@@ -123,10 +120,15 @@ class SemanticIterator(BaseAgent):
                     data={},
                     error="No items could be extracted"
                 )
-                
+            
+            # Format results properly for agent response
             return AgentResponse(
                 success=True,
-                data={"results": results}
+                data={
+                    "results": results,
+                    "count": len(results),
+                    "format": format_hint
+                }
             )
 
         except Exception as e:
@@ -176,17 +178,17 @@ class SemanticIterator(BaseAgent):
                         response_type=type(response.data.get('response')).__name__ if response.data else None)
             
             if response.success:
-                # Handle direct response or nested data
-                if 'response' in response.data and isinstance(response.data['response'], (list, str)):
-                    if isinstance(response.data['response'], str):
-                        try:
-                            self._state.current_items = json.loads(response.data['response'])
-                        except json.JSONDecodeError:
-                            self._state.current_items = None
-                    else:
-                        self._state.current_items = response.data['response']
+                # Trust the LLM response format
+                response_data = response.data.get('response', '')
+                if isinstance(response_data, str):
+                    try:
+                        self._state.current_items = json.loads(response_data)
+                    except json.JSONDecodeError:
+                        # If not JSON, treat as a list with single item
+                        self._state.current_items = [response_data]
                 else:
-                    self._state.current_items = response.data
+                    # Accept whatever format the LLM returned
+                    self._state.current_items = response_data if isinstance(response_data, list) else [response_data]
                 
                 logger.debug("iterator.items_loaded", 
                            items_type=type(self._state.current_items).__name__,
@@ -259,4 +261,11 @@ class SemanticIterator(BaseAgent):
             raise ExtractionComplete()
             
         self._state.position += 1
+        
+        # Parse JSON response if needed
+        if isinstance(content, str):
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                return content
         return content

@@ -153,13 +153,33 @@ def format_output(data: Dict[str, Any], mode: RunMode) -> None:
                 result_data = result
                 
         else:  # Agent mode
-            result_data = data.get("result_data", {}) if data else {}
+            # Extract result data handling different formats
+            if isinstance(data, dict):
+                if 'success' in data and data['success']:
+                    # Handle semantic iterator specific results
+                    if 'result' in data and isinstance(data['result'], dict):
+                        agent_data = data['result']
+                        if 'result_data' in agent_data:
+                            # Standard agent format
+                            result_data = agent_data['result_data']
+                        else:
+                            # Direct result data
+                            result_data = agent_data
+                    else:
+                        # Direct result format
+                        result_data = data.get('result_data', data.get('result', {}))
+                else:
+                    result_data = {'error': data.get('error', 'Unknown error')}
+            else:
+                result_data = data
 
         # Print all result data with consistent indentation
         print_value(result_data)
             
     except Exception as e:
         logger.error("output.format_failed", error=str(e))
+        print(f"Error formatting output: {str(e)}")
+        print("Raw data:")
         print(str(data))
 
 """
