@@ -1,3 +1,5 @@
+# Path: c4h_agents/examples/configs/coder_config04.yml
+
 llm_config:
   agents:
     coder:
@@ -12,7 +14,7 @@ llm_config:
         output: "/Users/jim/src/apps/c4h_prefect_v1"
 
 input_data:
-  changes: |
+  response: |
     {
       "changes": [
         {
@@ -35,6 +37,3 @@ input_data:
         }
       ]
     }
-
-instruction: "Create the initial Prefect workflow structure"
-format: "json"

@@ -295,6 +295,7 @@ llm_config:
           - Return ONLY the complete modified file content
           - Do NOT include any diff markers, explanations, or additional text
           - Ensure the returned content is a valid, runnable file
+          - DO NOT give any conversation text, the output will be fed into a process, any text other than what is required will break the pipeline
 
     coder:
       provider: "anthropic"

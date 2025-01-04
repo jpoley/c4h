@@ -110,6 +110,11 @@ def load_configs(config_path: str) -> Dict[str, Any]:
         logger.error("config.load_failed", error=str(e))
         raise
 
+"""
+Extended Prefect runner supporting both individual agents and full workflow execution.
+Path: c4h_services/examples/prefect_runner.py
+"""
+
 def format_output(data: Dict[str, Any], mode: RunMode) -> None:
     """Format task output for display"""
     print("\n=== Results ===\n")
@@ -129,16 +134,38 @@ def format_output(data: Dict[str, Any], mode: RunMode) -> None:
             print(f"{spaces}{value}")
     
     try:
-        if data.get("success", False):
-            # Print all result data with consistent indentation
-            result_data = data.get("result_data", {})
-            print_value(result_data)
-        else:
-            print(f"Error: {data.get('error', 'Unknown error')}")
+        # Handle successful workflow completion
+        if mode == RunMode.WORKFLOW:
+            if isinstance(data, str):
+                print(data)
+                return
+                
+            result = data.result() if hasattr(data, 'result') else data
+            if isinstance(result, dict) and 'result' in result:
+                result_data = result['result']
+            elif isinstance(result, dict) and 'stages' in result:
+                result_data = {
+                    'status': 'success',
+                    'changes': result.get('changes', []),
+                    'stages': result.get('stages', {})
+                }
+            else:
+                result_data = result
+                
+        else:  # Agent mode
+            result_data = data.get("result_data", {}) if data else {}
+
+        # Print all result data with consistent indentation
+        print_value(result_data)
             
     except Exception as e:
         logger.error("output.format_failed", error=str(e))
         print(str(data))
+
+"""
+Extended Prefect runner supporting both individual agents and full workflow execution.
+Path: c4h_services/examples/prefect_runner.py
+"""
 
 @flow(name="prefect_runner")
 def run_flow(
@@ -159,25 +186,40 @@ def run_flow(
             if extra_params:
                 context.update(extra_params)
                 
-            return run_agent_task(
+            result = run_agent_task(
                 agent_config=task_config,
                 context=context,
                 task_name=f"test_{agent_type}"
             )
+            return {
+                "success": True,
+                "result": result.result() if hasattr(result, "result") else result
+            }
         else:
             # Run full workflow
-            return run_basic_workflow(
+            result = run_basic_workflow(
                 project_path=Path(config.get("project_path", ".")),
                 intent_desc=config.get("intent", {}),
                 config=config
             )
+            
+            # Extract result from Prefect State
+            if hasattr(result, "result"):
+                workflow_result = result.result()
+            else:
+                workflow_result = result
+                
+            return {
+                "success": True,
+                "result": workflow_result
+            }
             
     except Exception as e:
         logger.error("runner.failed", error=str(e))
         return {
             "success": False,
             "error": str(e),
-            "result_data": {}
+            "result": {}
         }
 
 def main():

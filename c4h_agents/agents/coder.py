@@ -1,14 +1,12 @@
 """
 Primary coder agent implementation using semantic extraction.
-Path: src/agents/coder.py
+Path: c4h_agents/agents/coder.py
 """
-
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 import structlog
 from datetime import datetime, timezone
 from pathlib import Path
-import json
 from agents.base import BaseAgent, AgentResponse, LogDetail
 from skills.semantic_merge import SemanticMerge
 from skills.semantic_iterator import SemanticIterator
@@ -35,17 +33,17 @@ class Coder(BaseAgent):
         """Initialize coder with configuration"""
         super().__init__(config=config)
         
-        # Get coder-specific config using inheritance
+        # Get coder-specific config 
         coder_config = self._get_agent_config()
         
-        # Initialize backup location from config
+        # Initialize backup location
         backup_path = Path(coder_config.get('backup', {}).get('path', 'workspaces/backups'))
         
-        # Create semantic tools with same config inheritance
+        # Create semantic tools
         self.iterator = SemanticIterator(config=config)
         self.merger = SemanticMerge(config=config)
         
-        # Setup asset management with inherited config
+        # Setup asset management
         self.asset_manager = AssetManager(
             backup_enabled=coder_config.get('backup_enabled', True),
             backup_dir=backup_path,
@@ -56,15 +54,11 @@ class Coder(BaseAgent):
         # Initialize metrics
         self.operation_metrics = CoderMetrics()
         
-        logger.info("coder.initialized",
-                   backup_path=str(backup_path))
+        logger.info("coder.initialized", backup_path=str(backup_path))
 
-    def _get_agent_name(self) -> str:
-        return "coder"
-        
     def _get_required_keys(self) -> List[str]:
         """Define keys required by coder agent."""
-        return ['changes', 'input_data']
+        return ['input_data']  # Only need the raw input
 
     def process(self, context: Dict[str, Any]) -> AgentResponse:
         """Process code changes using semantic extraction"""
@@ -72,39 +66,24 @@ class Coder(BaseAgent):
         logger.debug("coder.input_data", data=context)
 
         try:
-            # Get required data using inheritance
+            # Get raw input data
             data = self._get_data(context)
+            input_data = data.get('input_data', {})
             
-            # Support both direct changes and changes in input_data
-            changes = None
-            
-            # First try direct changes key
-            if 'changes' in data:
-                changes = data['changes']
-            # Then check input_data
-            elif 'input_data' in data:
-                input_data = data['input_data']
-                # Handle string JSON
-                if isinstance(input_data, str):
-                    try:
-                        input_data = json.loads(input_data)
-                    except json.JSONDecodeError:
-                        pass
-                # Extract changes from input_data
-                if isinstance(input_data, dict):
-                    changes = input_data.get('changes', [])
-            
-            # Fallback to empty list if no changes found
-            if changes is None:
-                changes = []
-                
-            logger.debug("coder.processing_changes", count=len(changes))
-            
+            # Configure iterator to find repeating blocks
+            self.iterator.configure(
+                content=input_data.get('response', ''),
+                config=ExtractConfig(
+                    instruction="Extract each code change object",
+                    format="json"  # Semantic Iterator will handle the JSON parsing
+                )
+            )
+
             # Track results
             results = []
             
-            # Process each change in the array
-            for change in changes:
+            # Let iterator find and process each change
+            for change in self.iterator:
                 logger.debug("coder.processing_change", change=change)
                 result = self.asset_manager.process_action(change)
                 

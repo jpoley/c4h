@@ -5,8 +5,8 @@ project_path: "./tests/test_projects/"  # Using test project
 
 # Intent description
 intent:
-  description: "Add logging to all functions"
-  requirements:
+  description: |
+   "Add logging to all functions"
     - "Replace print statements with logging"
     - "Add logging configuration"
 

@@ -1,6 +1,6 @@
 """
 Asset management with file system operations and backup management.
-Path: src/skills/asset_manager.py
+Path: c4h_agents/skills/asset_manager.py
 """
 
 from pathlib import Path
@@ -49,7 +49,7 @@ class AssetManager(BaseAgent):
             self.backup_dir.mkdir(parents=True, exist_ok=True)
             
         # Create semantic merger with config
-        self.merger = SemanticMerge(config=self.config)
+        self.merger = kwargs.get('merger') or SemanticMerge(config=self.config)
 
         logger.info("asset_manager.initialized",
                    backup_enabled=self.backup_enabled,
@@ -86,7 +86,7 @@ class AssetManager(BaseAgent):
         """Get path relative to project root"""
         path = self._normalize_path(path)
         try:
-            return path.relative_to(self.project_root)
+            return path.relative_to(self.output_root)
         except ValueError:
             return path
 
@@ -125,8 +125,7 @@ class AssetManager(BaseAgent):
             path = self._get_absolute_path(file_path)
             logger.debug("asset.processing", 
                         input_path=file_path,
-                        resolved_path=str(path),
-                        project_root=str(self.project_root))
+                        resolved_path=str(path))
 
             # Create backup if enabled and file exists
             backup_path = None
