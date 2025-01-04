@@ -1,0 +1,141 @@
+# Path: c4h_services/examples/config/workflow_coder_dev.yml
+
+# Project settings
+project:
+  path: "/Users/jim/src/apps/c4h_ai_dev"  # Absolute path to project
+  workspace_root: "/Users/jim/src/apps/c4h_ai_dev/workspaces"
+
+# Intent description
+intent:
+  description: |
+    "Add logging to all functions"
+    - "Replace print statements with logging"
+    - "Add logging configuration"
+
+# Provider configuration
+providers:
+  anthropic:
+    api_base: "https://api.anthropic.com"
+    default_model: "claude-3-opus-20240229"
+
+# LLM Configuration
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  
+  agents:
+    discovery:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      tartxt_config:
+        script_path: "/Users/jim/src/apps/c4h_ai_dev/c4h_agents/skills/tartxt.py"  # Absolute path to tartxt.py
+        input_paths: 
+          - "c4h_agents"
+          - "c4h_services"
+          - "config"
+          - "docs"
+        exclusions: 
+          - "**/__pycache__/**"
+          - "**/.git/**"
+          - "**/*.pyc"
+          - "**/workspaces/**"
+          - "**/.pytest_cache/**"
+        output_type: "stdout"
+
+    solution_designer:
+      provider: "anthropic"
+      model: "c# Path: c4h_services/examples/config/workflow_coder_dev.yml
+
+# Project settings
+project:
+  path: "/Users/jim/src/apps/c4h_ai_dev"  # Absolute path to project
+  workspace_root: "/Users/jim/src/apps/c4h_ai_dev/workspaces"
+
+# Intent description
+intent:
+  description: |
+    "Add logging to all functions"
+    - "Replace print statements with logging"
+    - "Add logging configuration"
+
+# Provider configuration
+providers:
+  anthropic:
+    api_base: "https://api.anthropic.com"
+    default_model: "claude-3-opus-20240229"
+
+# LLM Configuration
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  
+  agents:
+    discovery:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      tartxt_config:
+        script_path: "/Users/jim/src/apps/c4h_ai_dev/c4h_agents/skills/tartxt.py"  # Absolute path to tartxt.py
+        input_paths: 
+          - "c4h_agents"
+          - "c4h_services"
+          - "config"
+          - "docs"
+        exclusions: 
+          - "**/__pycache__/**"
+          - "**/.git/**"
+          - "**/*.pyc"
+          - "**/workspaces/**"
+          - "**/.pytest_cache/**"
+        output_type: "stdout"
+
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-latest"
+      temperature: 0.1
+
+    coder:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      backup_enabled: true
+
+    assurance:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+
+# Backup settings
+backup:
+  enabled: true
+  path: "/Users/jim/src/apps/c4h_ai_dev/workspaces/backups"
+
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "DEBUG""
+      temperature: 0.1
+
+    coder:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      backup_enabled: true
+
+    assurance:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+
+# Backup settings
+backup:
+  enabled: true
+  path: "/Users/jim/src/apps/c4h_ai_dev/workspaces/backups"
+
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "DEBUG"
