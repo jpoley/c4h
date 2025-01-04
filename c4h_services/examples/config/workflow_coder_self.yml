@@ -1,4 +1,4 @@
-# Path: c4h_services/examples/config/workflow_coder_dev.yml
+# Path: c4h_services/examples/config/workflow_coder_self.yml
 
 # Project settings
 project:
@@ -8,9 +8,14 @@ project:
 # Intent description
 intent:
   description: |
-    "Add logging to all functions"
-    - "Replace print statements with logging"
-    - "Add logging configuration"
+    "- Design Constraints - read Agent Design Principles, all designs must be constrained by those principles"
+    "- Compare any proposed solution against the original code, do not lose any functionality, do not overdesign, stick to the principles"
+    "Intent - review base agent design"
+    "Implement a new skill, semantic_formater.py"
+    "it takes a blob of text with a prompt and returns a response"
+    "Model it in semantic_extractor.py, it will need its own configuration"
+    "both semantic_extractor and now semantic_formater are single shot skills"
+    "that take a blob with a configured prompt according to its configuration"
 
 # Provider configuration
 providers:
@@ -29,54 +34,7 @@ llm_config:
       model: "claude-3-opus-20240229"
       temperature: 0
       tartxt_config:
-        script_path: "/Users/jim/src/apps/c4h_ai_dev/c4h_agents/skills/tartxt.py"  # Absolute path to tartxt.py
-        input_paths: 
-          - "c4h_agents"
-          - "c4h_services"
-          - "config"
-          - "docs"
-        exclusions: 
-          - "**/__pycache__/**"
-          - "**/.git/**"
-          - "**/*.pyc"
-          - "**/workspaces/**"
-          - "**/.pytest_cache/**"
-        output_type: "stdout"
-
-    solution_designer:
-      provider: "anthropic"
-      model: "c# Path: c4h_services/examples/config/workflow_coder_dev.yml
-
-# Project settings
-project:
-  path: "/Users/jim/src/apps/c4h_ai_dev"  # Absolute path to project
-  workspace_root: "/Users/jim/src/apps/c4h_ai_dev/workspaces"
-
-# Intent description
-intent:
-  description: |
-    "Add logging to all functions"
-    - "Replace print statements with logging"
-    - "Add logging configuration"
-
-# Provider configuration
-providers:
-  anthropic:
-    api_base: "https://api.anthropic.com"
-    default_model: "claude-3-opus-20240229"
-
-# LLM Configuration
-llm_config:
-  default_provider: "anthropic"
-  default_model: "claude-3-opus-20240229"
-  
-  agents:
-    discovery:
-      provider: "anthropic"
-      model: "claude-3-opus-20240229"
-      temperature: 0
-      tartxt_config:
-        script_path: "/Users/jim/src/apps/c4h_ai_dev/c4h_agents/skills/tartxt.py"  # Absolute path to tartxt.py
+        script_path: "/Users/jim/src/apps/c4h_ai_dev/c4h_agents/skills/tartxt.py"
         input_paths: 
           - "c4h_agents"
           - "c4h_services"
@@ -106,28 +64,31 @@ llm_config:
       model: "claude-3-opus-20240229"
       temperature: 0
 
-# Backup settings
-backup:
-  enabled: true
-  path: "/Users/jim/src/apps/c4h_ai_dev/workspaces/backups"
-
-# Logging configuration
-logging:
-  level: "INFO"
-  format: "structured"
-  agent_level: "DEBUG""
-      temperature: 0.1
-
-    coder:
+    semantic_formatter:  # New configuration for semantic formatter
       provider: "anthropic"
       model: "claude-3-opus-20240229"
       temperature: 0
-      backup_enabled: true
+      prompts:
+        system: |
+          You are a precise text formatting agent.
+          Your role is to format input text according to specific requirements.
+          Rules:
+          1. Follow formatting instructions exactly
+          2. Preserve original content meaning
+          3. Apply consistent formatting
+          4. Return only formatted text
+          5. No explanations or additional content
 
-    assurance:
-      provider: "anthropic"
-      model: "claude-3-opus-20240229"
-      temperature: 0
+        format: |
+          Format the following content:
+
+          Content to format:
+          {content}
+
+          Formatting instruction:
+          {instruction}
+
+          Return only the formatted text without any markup or explanations.
 
 # Backup settings
 backup:
