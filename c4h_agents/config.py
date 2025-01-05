@@ -178,6 +178,12 @@ def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]
     result = deepcopy(base)
     
     try:
+        logger.debug("config.merge.starting",
+            base_keys=list(base.keys()),
+            override_keys=list(override.keys()),
+            project_settings=override.get('project', {})
+        )
+
         # Handle root level merge
         if 'llm_config' in result or 'llm_config' in override:
             # Identify system vs runtime keys
@@ -213,6 +219,11 @@ def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]
             else:
                 result[key] = deepcopy(value)
             
+        logger.debug("config.merge.complete",
+            result_keys=list(result.keys()),
+            project_path=result.get('project', {}).get('path')
+        )
+        
         return result
 
     except Exception as e:

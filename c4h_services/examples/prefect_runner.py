@@ -93,6 +93,13 @@ def load_configs(config_path: str) -> Dict[str, Any]:
             root_dir / "config" / "system_config.yml"
         ]
         
+        logger.info("config.paths.search", 
+            cwd=str(Path.cwd()),
+            root_dir=str(root_dir),
+            sys_paths=[str(p) for p in sys_paths],
+            config_path=config_path
+        )
+        
         sys_config_path = next((p for p in sys_paths if p.exists()), None)
         if not sys_config_path:
             raise FileNotFoundError("system_config.yml not found")
@@ -103,6 +110,12 @@ def load_configs(config_path: str) -> Dict[str, Any]:
             
         with open(config_path) as f:
             test_config = yaml.safe_load(f)
+
+        logger.info("config.content.loaded",
+            system_config_keys=list(system_config.keys()),
+            test_config_keys=list(test_config.keys()),
+            project_path=test_config.get('project', {}).get('path')
+        )
 
         return deep_merge(system_config, test_config)
 

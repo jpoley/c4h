@@ -58,19 +58,24 @@ class AssetManager(BaseAgent):
                    output_root=str(self.output_root))
 
     def _normalize_path(self, path: Union[str, Path]) -> Path:
-        """
-        Normalize an input path by:
-        1. Converting to Path object
-        2. Resolving all symlinks and relative segments (..)
-        3. Making it absolute relative to source/output root
-        """
+        """Normalize an input path"""
+        logger.debug("asset_manager.normalize_path.input",
+                    input_path=str(path),
+                    source_root=str(self.source_root),
+                    output_root=str(self.output_root))
+        
         path = Path(str(path).replace('//', '/'))
         
         if path.is_absolute():
+            logger.debug("asset_manager.normalize_path.absolute", path=str(path))
             return path
-            
+                
         # Try output path first since that's where we're writing
-        return (self.output_root / path).resolve()
+        normalized = (self.output_root / path).resolve()
+        logger.debug("asset_manager.normalize_path.result",
+                    input=str(path),
+                    normalized=str(normalized))
+        return normalized
 
     def _get_absolute_path(self, path: Union[str, Path]) -> Path:
         """Convert path to absolute output path"""

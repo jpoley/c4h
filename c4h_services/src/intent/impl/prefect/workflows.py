@@ -48,6 +48,14 @@ def run_basic_workflow(
         # Step 1: Discovery
         # Ensure project path exists and is absolute from current working directory
         project_dir = Path.cwd() / project_path
+
+        logger.info("workflow.paths.initialize",
+            input_path=str(project_path),
+            resolved_dir=str(project_dir),
+            config_project_path=config.get('project', {}).get('path'),
+            cwd=str(Path.cwd())
+        )
+
         if not project_dir.exists():
             return Failed(
                 message=f"Project path does not exist: {project_dir}",
