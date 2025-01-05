@@ -1,6 +1,13 @@
 """
-Base agent implementation with integrated LiteLLM configuration.
-Path: src/agents/base.py
+Base agent implementation with integrated LiteLLM configuration and Project support.
+Path: c4h_agents/agents/base.py
+
+Function Manifest:
+- BaseAgent:
+    * MODIFIED: __init__(self, config, project) -> Added optional project param
+    * MODIFIED: _get_agent_config() -> Added project config support
+    * MODIFIED: _resolve_model() -> Enhanced with project awareness
+    * NEW: resolve_path(path) -> Project-aware path resolution
 """
 
 from abc import ABC, abstractmethod
@@ -9,13 +16,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 import asyncio
-from typing import Dict, Any, Optional, List, Literal, Tuple
+from typing import Dict, Any, Optional, List, Literal, Tuple, Union
 from functools import wraps
 import time
 import litellm
 from litellm import completion
 from config import locate_config, locate_keys
 import json
+from pathlib import Path
+
+# Import Project model with type hints
+from ..core.project import Project, ProjectPaths
 
 logger = structlog.get_logger()
 
@@ -30,7 +41,7 @@ class LogDetail(str, Enum):
         try:
             return cls(level.lower())
         except ValueError:
-            return cls.BASIC  # Safe default
+            return cls.BASIC
 
 class LLMProvider(str, Enum):
     """Supported model providers"""
@@ -72,9 +83,14 @@ class AgentConfig:
     context_length: Optional[int] = None
 
 class BaseAgent:
-    def __init__(self, config: Dict[str, Any] = None):
-        """Initialize agent with raw config dictionary."""
+    def __init__(self, config: Dict[str, Any] = None, project: Optional[Project] = None):
+        """Initialize agent with configuration and optional project"""
         self.config = config or {}
+        self.project = project
+        
+        # Create important paths if using project
+        if self.project:
+            self.ensure_paths()
         
         # Extract and validate config for this agent
         agent_config = self._get_agent_config()
@@ -84,14 +100,15 @@ class BaseAgent:
         self.model = agent_config.get('model', 'claude-3-opus-20240229')
         self.temperature = agent_config.get('temperature', 0)
         
-        # Initialize metrics
+        # Initialize metrics with project context
         self.metrics = {
             "total_requests": 0,
             "successful_requests": 0,
             "failed_requests": 0,
             "total_duration": 0.0,
             "last_error": None,
-            "start_time": datetime.utcnow().isoformat()
+            "start_time": datetime.utcnow().isoformat(),
+            "project": self.project.metadata.name if self.project else None
         }
 
         # Set logging detail level from config
@@ -102,18 +119,26 @@ class BaseAgent:
         self.model_str = self._get_model_str()
         self._setup_litellm(self._get_provider_config(self.provider))
         
-        # Initialize logger with context
-        self.logger = structlog.get_logger().bind(
-            agent=self._get_agent_name(),
-            provider=str(self.provider),
-            model=self.model,
-            log_level=str(self.log_level)
-        )
+        # Initialize logger with enhanced context
+        log_context = {
+            "agent": self._get_agent_name(),
+            "provider": str(self.provider),
+            "model": self.model,
+            "log_level": str(self.log_level)
+        }
         
-        logger.info(f"{self._get_agent_name()}.initialized",
-                   provider=str(self.provider),
-                   model=self.model,
-                   log_level=str(self.log_level))
+        # Add project context if available
+        if self.project:
+            log_context.update({
+                "project_name": self.project.metadata.name,
+                "project_version": self.project.metadata.version,
+                "project_root": str(self.project.paths.root)
+            })
+            
+        self.logger = structlog.get_logger().bind(**log_context)
+        
+        logger.info(f"{self._get_agent_name()}.initialized", **log_context)
+        
 
     def _resolve_model(self, explicit_model: Optional[str], provider_config: Dict[str, Any]) -> str:
         """Resolve model using fallback chain"""
@@ -152,9 +177,21 @@ class BaseAgent:
             # Safe fallback
             return f"{self.provider.value}/{self.model}"
 
+    def _get_provider_config(self, provider: LLMProvider) -> Dict[str, Any]:
+        """Get provider configuration from system config"""
+        return self.config.get("providers", {}).get(provider.value, {})
+
     def _get_agent_config(self) -> Dict[str, Any]:
         """Extract relevant config for this agent."""
         try:
+            # If we have a project, use its configuration system
+            if self.project:
+                config = self.project.get_agent_config(self._get_agent_name())
+                logger.debug("agent.using_project_config",
+                           agent=self._get_agent_name(),
+                           project=self.project.metadata.name)
+                return config
+                
             # Use locate_config to find agent's settings
             agent_config = locate_config(self.config or {}, self._get_agent_name())
             
@@ -180,7 +217,7 @@ class BaseAgent:
             # Override with agent specific settings (most specific wins)
             config.update({
                 k: v for k, v in agent_config.items() 
-                if k in ['provider', 'temperature', 'api_base']  # Note: model handled separately
+                if k in ['provider', 'temperature', 'api_base']
             })
             
             logger.debug("agent.config_loaded",
@@ -195,9 +232,37 @@ class BaseAgent:
                         error=str(e))
             return {}
 
-    def _get_provider_config(self, provider: LLMProvider) -> Dict[str, Any]:
-        """Get provider configuration from system config"""
-        return self.config.get("providers", {}).get(provider.value, {})
+    def ensure_paths(self) -> None:
+        """Ensure required project paths exist"""
+        if not self.project:
+            return
+            
+        try:
+            # Create standard paths if they don't exist
+            self.project.paths.workspace.mkdir(parents=True, exist_ok=True)
+            self.project.paths.output.mkdir(parents=True, exist_ok=True)
+            
+            # Log path status
+            logger.debug("agent.paths_validated",
+                        workspace=str(self.project.paths.workspace),
+                        output=str(self.project.paths.output))
+                        
+        except Exception as e:
+            logger.error("agent.path_validation_failed",
+                        error=str(e))
+        
+    def resolve_path(self, path: Union[str, Path]) -> Path:
+        """Resolve path using project context if available"""
+        path = Path(path)
+        if self.project:
+            return self.project.resolve_path(path)
+        return path.resolve()
+        
+    def get_relative_path(self, path: Union[str, Path]) -> Path:
+        """Get path relative to project root if available"""
+        if self.project:
+            return self.project.get_relative_path(Path(path))
+        return Path(path)        
 
     def _should_log(self, level: LogDetail) -> bool:
         """Check if should log at this level"""
@@ -208,19 +273,7 @@ class BaseAgent:
             LogDetail.DEBUG: 3
         }
         return log_levels[level] <= log_levels[self.log_level]
-
-    def _setup_litellm(self, provider_config: Dict[str, Any]) -> None:
-        """Configure litellm with provider settings"""
-        litellm_config = provider_config.get("litellm_params", {})
-        
-        for key, value in litellm_config.items():
-            setattr(litellm, key, value)
-            
-        if self._should_log(LogDetail.DEBUG):
-            logger.debug("litellm.configured", 
-                        provider=str(self.provider),
-                        config=litellm_config)
-
+    
     def _update_metrics(self, duration: float, success: bool, error: Optional[str] = None) -> None:
         """Update agent metrics"""
         self.metrics["total_requests"] += 1
@@ -236,6 +289,18 @@ class BaseAgent:
                        metrics=self.metrics,
                        duration=duration,
                        success=success)
+
+    def _setup_litellm(self, provider_config: Dict[str, Any]) -> None:
+        """Configure litellm with provider settings"""
+        litellm_config = provider_config.get("litellm_params", {})
+        
+        for key, value in litellm_config.items():
+            setattr(litellm, key, value)
+            
+        if self._should_log(LogDetail.DEBUG):
+            logger.debug("litellm.configured", 
+                        provider=str(self.provider),
+                        config=litellm_config)
 
     @abstractmethod
     def _get_agent_name(self) -> str:
@@ -253,13 +318,6 @@ class BaseAgent:
         """
         Locate multiple required keys in input data.
         Uses same pattern as config location.
-        
-        Args:
-            data: Data to search
-            keys: List of required keys
-            
-        Returns:
-            Dict mapping keys to (value, path) tuples
         """
         return locate_keys(data, keys)
 
@@ -267,9 +325,6 @@ class BaseAgent:
         """
         Extract required data using key discovery with JSON parsing.
         Each agent specifies its required keys.
-        
-        Returns:
-            Dict of found values with proper parsing
         """
         required = self._get_required_keys()
         if not required:

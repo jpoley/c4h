@@ -1,18 +1,18 @@
 """
-Asset management with file system operations and backup management.
+Asset management with Project-aware file system operations.
 Path: c4h_agents/skills/asset_manager.py
 """
 
 from pathlib import Path
-from typing import Optional, Dict, Any, Union, List
+from typing import Optional, Dict, Any, Union
 from dataclasses import dataclass
 import structlog
 import shutil
 from datetime import datetime
-from skills.semantic_merge import SemanticMerge
-from agents.base import AgentResponse
-from config import locate_config
-from agents.base import BaseAgent
+from .semantic_merge import SemanticMerge
+from ..agents.base import BaseAgent, AgentResponse
+from ..core.project import Project
+from ..config import locate_config
 
 logger = structlog.get_logger()
 
@@ -25,41 +25,50 @@ class AssetResult:
     error: Optional[str] = None
 
 class AssetManager(BaseAgent):
-    """Manages asset operations with file system handling"""
+    """Manages asset operations with project-aware file system handling"""
     
-    def __init__(self, config: Dict[str, Any] = None, **kwargs):  # Add **kwargs to accept legacy params
-        """Initialize asset manager with configuration"""
-        super().__init__(config=config)
+    def __init__(self, config: Dict[str, Any] = None, project: Optional[Project] = None, **kwargs):
+        """Initialize asset manager with configuration and optional project"""
+        super().__init__(config=config, project=project)
         
         # Get asset manager specific config
         asset_config = locate_config(self.config, "asset_manager")
-        paths = asset_config.get('paths', {})
         
-        # Get paths from config
-        self.source_root = Path(paths.get('source', '.')).resolve()
-        self.output_root = Path(paths.get('output', paths.get('project_root', '.'))).resolve()
-        
-        # Handle backup directory - relative to output path
-        backup_path = asset_config.get('backup_dir', 'workspaces/backups')
-        self.backup_dir = (self.output_root / backup_path).resolve()
-        
-        # Use config value, fall back to kwargs for backward compatibility
+        # Initialize paths based on project or config
+        if self.project:
+            self.source_root = self.project.paths.source
+            self.output_root = self.project.paths.output
+            self.backup_dir = self.project.paths.workspace / "backups"
+        else:
+            # Legacy path handling for backward compatibility
+            paths = asset_config.get('paths', {})
+            self.source_root = Path(paths.get('source', '.')).resolve()
+            self.output_root = Path(paths.get('output', paths.get('project_root', '.'))).resolve()
+            backup_path = asset_config.get('backup_dir', 'workspaces/backups')
+            self.backup_dir = (self.output_root / backup_path).resolve()
+
+        # Configure backup settings
         self.backup_enabled = asset_config.get('backup_enabled', kwargs.get('backup_enabled', True))
         if self.backup_enabled:
             self.backup_dir.mkdir(parents=True, exist_ok=True)
             
         # Create semantic merger with config
-        self.merger = kwargs.get('merger') or SemanticMerge(config=self.config)
+        self.merger = kwargs.get('merger') or SemanticMerge(config=self.config, project=self.project)
 
         logger.info("asset_manager.initialized",
                    backup_enabled=self.backup_enabled,
                    backup_dir=str(self.backup_dir),
                    source_root=str(self.source_root),
-                   output_root=str(self.output_root))
+                   output_root=str(self.output_root),
+                   project_name=self.project.metadata.name if self.project else None)
 
     def _normalize_path(self, path: Union[str, Path]) -> Path:
-        """Normalize an input path"""
-        logger.debug("asset_manager.normalize_path.input",
+        """Normalize path using project context if available"""
+        if self.project:
+            return self.project.resolve_path(path)
+            
+        # Legacy normalization for backward compatibility
+        logger.debug("asset_manager.normalize_path.legacy",
                     input_path=str(path),
                     source_root=str(self.source_root),
                     output_root=str(self.output_root))
@@ -77,18 +86,12 @@ class AssetManager(BaseAgent):
                     normalized=str(normalized))
         return normalized
 
-    def _get_absolute_path(self, path: Union[str, Path]) -> Path:
-        """Convert path to absolute output path"""
-        path = Path(str(path))
-        
-        if path.is_absolute():
-            return path
-        
-        # Use output root for new paths
-        return (self.output_root / path).resolve()
-
     def _get_relative_path(self, path: Union[str, Path]) -> Path:
-        """Get path relative to project root"""
+        """Get path relative to project root using project if available"""
+        if self.project:
+            return self.project.get_relative_path(path)
+            
+        # Legacy relative path handling
         path = self._normalize_path(path)
         try:
             return path.relative_to(self.output_root)
@@ -96,13 +99,13 @@ class AssetManager(BaseAgent):
             return path
 
     def _get_next_backup_path(self, path: Path) -> Path:
-        """Generate backup path for specific file"""
+        """Generate backup path maintaining directory structure"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Get normalized relative path
         rel_path = self._get_relative_path(path)
         
-        # Create backup path maintaining only necessary structure
+        # Create backup path maintaining structure
         backup_path = self.backup_dir / timestamp / rel_path
         
         logger.debug("asset_manager.backup_path_generated",
@@ -113,7 +116,7 @@ class AssetManager(BaseAgent):
         return backup_path
 
     def process_action(self, action: Dict[str, Any]) -> AssetResult:
-        """Process a single asset action using state matrix logic"""
+        """Process a single asset action with project awareness"""
         try:
             # Extract file path using common keys
             file_path = None
@@ -126,11 +129,12 @@ class AssetManager(BaseAgent):
             if not file_path:
                 raise ValueError("No file path found in action")
             
-            # Convert to absolute path with proper resolution
-            path = self._get_absolute_path(file_path)
+            # Use project-aware path resolution
+            path = self._normalize_path(file_path)
             logger.debug("asset.processing", 
                         input_path=file_path,
-                        resolved_path=str(path))
+                        resolved_path=str(path),
+                        project=self.project.metadata.name if self.project else None)
 
             # Create backup if enabled and file exists
             backup_path = None
@@ -167,7 +171,8 @@ class AssetManager(BaseAgent):
             path.write_text(content)
             logger.info("asset.write_success", 
                        path=str(path),
-                       relative=str(self._get_relative_path(path)))
+                       relative=str(self._get_relative_path(path)),
+                       project=self.project.metadata.name if self.project else None)
 
             return AssetResult(
                 success=True,
@@ -178,7 +183,8 @@ class AssetManager(BaseAgent):
         except Exception as e:
             logger.error("asset.process_failed", 
                         error=str(e),
-                        path=str(path) if 'path' in locals() else None)
+                        path=str(path) if 'path' in locals() else None,
+                        project=self.project.metadata.name if self.project else None)
             return AssetResult(
                 success=False,
                 path=path if 'path' in locals() else Path('.'),
@@ -199,5 +205,7 @@ class AssetManager(BaseAgent):
                 error=result.error
             )
         except Exception as e:
-            logger.error("asset_manager.process_failed", error=str(e))
+            logger.error("asset_manager.process_failed", 
+                        error=str(e),
+                        project=self.project.metadata.name if self.project else None)
             return AgentResponse(success=False, data={}, error=str(e))
