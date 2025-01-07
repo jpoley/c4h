@@ -196,7 +196,7 @@ def format_output(data: Dict[str, Any], mode: RunMode) -> None:
         print(str(data))
 
 """
-Extended Prefect runner supporting both individual agents and full workflow execution.
+Main flow function for Prefect runner.
 Path: c4h_services/examples/prefect_runner.py
 """
 
@@ -209,6 +209,22 @@ def run_flow(
 ) -> Dict[str, Any]:
     """Main flow for running agents or workflows"""
     try:
+        # Resolve project paths first
+        if 'project' in config:
+            project_config = config['project']
+            if 'path' in project_config:
+                project_path = Path(project_config['path']).resolve()
+                project_config['path'] = str(project_path)
+                
+                # Resolve workspace root relative to project path if not absolute
+                workspace_root = project_config.get('workspace_root')
+                if workspace_root and not Path(workspace_root).is_absolute():
+                    project_config['workspace_root'] = str(project_path / workspace_root)
+                    
+                logger.info("runner.project.paths",
+                    project_path=str(project_path),
+                    workspace_root=project_config.get('workspace_root'))
+
         if mode == RunMode.AGENT:
             if not agent_type or agent_type not in AGENT_REGISTRY:
                 raise ValueError(f"Invalid agent type: {agent_type}")
@@ -216,6 +232,11 @@ def run_flow(
             # Run single agent
             task_config = AGENT_REGISTRY[agent_type](config)
             context = {"input_data": config.get("input_data", {})}
+            
+            # Add project context if available
+            if 'project' in config:
+                context['project'] = config['project']
+                
             if extra_params:
                 context.update(extra_params)
                 
@@ -229,9 +250,13 @@ def run_flow(
                 "result": result.result() if hasattr(result, "result") else result
             }
         else:
-            # Run full workflow
+            # Run full workflow using project path from config if available
+            project_path = config.get('project', {}).get('path')
+            if not project_path:
+                project_path = config.get("project_path", ".")
+            
             result = run_basic_workflow(
-                project_path=Path(config.get("project_path", ".")),
+                project_path=Path(project_path),
                 intent_desc=config.get("intent", {}),
                 config=config
             )

@@ -32,27 +32,25 @@ def run_basic_workflow(
     1. Discovery
     2. Solution Design
     3. Code Implementation
-    
-    Args:
-        project_path: Path to project to refactor
-        intent_desc: Description of intended changes
-        config: Complete configuration dictionary
-        
-    Returns:
-        Dictionary containing workflow results and state
     """
     flow_logger = get_run_logger()
     flow_logger.info("Starting basic refactoring workflow")
     
     try:
-        # Step 1: Discovery
-        # Ensure project path exists and is absolute from current working directory
-        project_dir = Path.cwd() / project_path
+        # Get project path from config if available, otherwise use provided path
+        config_project_path = config.get('project', {}).get('path')
+        if config_project_path:
+            project_dir = Path(config_project_path).resolve()
+            # Update config with resolved path
+            config['project']['path'] = str(project_dir)
+        else:
+            # Fallback to provided path
+            project_dir = Path(project_path).resolve()
 
         logger.info("workflow.paths.initialize",
-            input_path=str(project_path),
+            config_project_path=config_project_path,
+            provided_path=str(project_path),
             resolved_dir=str(project_dir),
-            config_project_path=config.get('project', {}).get('path'),
             cwd=str(Path.cwd())
         )
 
@@ -66,10 +64,17 @@ def run_basic_workflow(
                 }
             )
 
+        # Update context with resolved project path
         discovery_config = create_discovery_task(config)
         discovery_result = run_agent_task(
             agent_config=discovery_config,
-            context={"project_path": str(project_dir)},
+            context={
+                "project_path": str(project_dir),
+                "project": {
+                    "path": str(project_dir),
+                    "workspace_root": config.get('project', {}).get('workspace_root')
+                }
+            },
             task_name="discovery"
         )
         
@@ -85,14 +90,18 @@ def run_basic_workflow(
 
         flow_logger.info("Discovery completed successfully")
 
-        # Step 2: Solution Design
+        # Ensure project context is passed to solution design
         solution_config = create_solution_task(config)
         solution_result = run_agent_task(
             agent_config=solution_config,
             context={
                 "input_data": {
                     "discovery_data": discovery_result["result_data"],
-                    "intent": intent_desc
+                    "intent": intent_desc,
+                    "project": {
+                        "path": str(project_dir),
+                        "workspace_root": config.get('project', {}).get('workspace_root')
+                    }
                 }
             },
             task_name="solution_design"
@@ -111,12 +120,16 @@ def run_basic_workflow(
 
         flow_logger.info("Solution design completed successfully")
 
-        # Step 3: Code Implementation
+        # Pass project context to coder
         coder_config = create_coder_task(config)
         coder_result = run_agent_task(
             agent_config=coder_config,
             context={
-                "input_data": solution_result["result_data"]
+                "input_data": solution_result["result_data"],
+                "project": {
+                    "path": str(project_dir),
+                    "workspace_root": config.get('project', {}).get('workspace_root')
+                }
             },
             task_name="coder"
         )
@@ -145,7 +158,8 @@ def run_basic_workflow(
                     "solution_design": solution_result["result_data"],
                     "coder": coder_result["result_data"]
                 },
-                "changes": coder_result["result_data"].get("changes", [])
+                "changes": coder_result["result_data"].get("changes", []),
+                "project_path": str(project_dir)
             }
         )
 
