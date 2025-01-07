@@ -1,0 +1,109 @@
+# Path: c4h_services/examples/config/workflow_coder_self.yml
+
+# Project settings
+project:
+  path: "/Users/jim/src/apps/c4h_ai_dev"  # Absolute path to project
+  workspace_root: "workspaces"
+
+# Intent description
+intent:
+  description: |
+    - Design Constraints - read Agent Design Principles, all designs must be constrained by those principles
+    - Compare any proposed solution against the original code, do not lose any functionality, do not overdesign, stick to the principles
+    - NEVER lose existing functionality, or break existing code
+    Intent - the logging is too long, i want to better control the volukme of log
+    - we are running this through prefect_runnder, so it needs to support mulit modal logging flags --log debug|trace|default
+    If debug is enabled then print out the full prompt
+    If trace i'm interested mainly in the trace of the logic flow, and enough content to get context, then only show the first 100 and last 100 characters, make this configurable
+    If default set or no opting given, give minimal logging, such as warnings & errors, and final result
+    only updated the logging, dont lose functionality
+    makde sure the command line is honored by the agents
+# Provider configuration
+providers:
+  anthropic:
+    api_base: "https://api.anthropic.com"
+    default_model: "claude-3-opus-20240229"
+
+# LLM Configuration
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  
+  agents:
+    discovery:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      tartxt_config:
+        script_path: "/Users/jim/src/apps/c4h_ai_dev/c4h_agents/skills/tartxt.py"
+        input_paths: 
+          - "c4h_agents"
+          - "c4h_services"
+          - "config"
+          - "docs"
+        exclusions: 
+          - "**/__pycache__/**"
+          - "**/.git/**"
+          - "**/*.pyc"
+          - "**/workspaces/**"
+          - "**/.pytest_cache/**"
+          - "c4h_agents/examples/"
+          - "Intent*.md"
+          - "Refactor*.md"
+          - "c4h_agents*.md"
+        output_type: "stdout"
+
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-latest"
+      temperature: 0.1
+
+    coder:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      backup_enabled: true
+
+    assurance:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+
+    semantic_formatter:  # New configuration for semantic formatter
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      prompts:
+        system: |
+          You are a precise text formatting agent.
+          Your role is to format input text according to specific requirements.
+          Rules:
+          1. Follow formatting instructions exactly
+          2. Preserve original content meaning
+          3. Apply consistent formatting
+          4. Return only formatted text
+          5. No explanations or additional content
+
+        format: |
+          Format the following content:
+
+          Content to format:
+          {content}
+
+          Formatting instruction:
+          {instruction}
+
+          Return only the formatted text without any markup or explanations.
+          IMPORTANT do NOT give any other information, only the formatted text
+          IF you provide any other information, you will break the processing pipeline
+
+# Backup settings
+backup:
+  enabled: true
+  path: "/Users/jim/src/apps/c4h_ai_dev/workspaces/backups"
+
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "DEBUG"

@@ -135,7 +135,10 @@ llm_config:
           Intent:
           {intent}
 
-          Return ONLY the changes JSON, no explanations.
+          Return only the content without any markup or explanations.
+          IMPORTANT do NOT give any other information, only the asked for content
+          IF you provide any other information, you will break the processing pipeline
+
 
     semantic_extract:
       provider: "anthropic"
