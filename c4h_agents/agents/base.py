@@ -123,7 +123,7 @@ class BaseAgent:
         # Initialize logger with enhanced context
         log_context = {
             "agent": self._get_agent_name(),
-            "provider": str(self.provider),
+            "provider": self.provider.serialize(),
             "model": self.model,
             "log_level": str(self.log_level)
         }
@@ -300,7 +300,7 @@ class BaseAgent:
             
         if self._should_log(LogDetail.DEBUG):
             logger.debug("litellm.configured", 
-                        provider=str(self.provider),
+                        provider=self.provider.serialize(),
                         config=litellm_config)
 
     @abstractmethod
@@ -409,7 +409,7 @@ class BaseAgent:
                        system_prompt=system_message,
                        user_prompt=user_message,
                        model=self.model,
-                       provider=str(self.provider))
+                       provider=self.provider.serialize())
 
             messages = [
                 {"role": "system", "content": system_message},
@@ -438,24 +438,24 @@ class BaseAgent:
         """Format request message"""
         return str(context)
 
-def _process_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
-    """Process LLM response with safe logging"""
-    if self._should_log(LogDetail.DEBUG):
-        logger.debug("agent.processing_response",
-                    content_length=len(content) if content else 0,
-                    response_type=type(raw_response).__name__,
-                    provider=self.provider.serialize())  # Use safe serialization
-            
-    # Validate content integrity before logging
-    if content and isinstance(content, str):
-        # Basic validation that content is complete
-        if content.count('{') != content.count('}') or \
-           content.count('[') != content.count(']'):
-            logger.warning("agent.content_integrity_check_failed",
-                         provider=self.provider.serialize())
+    def _process_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
+        """Process LLM response with safe logging"""
+        if self._should_log(LogDetail.DEBUG):
+            logger.debug("agent.processing_response",
+                        content_length=len(content) if content else 0,
+                        response_type=type(raw_response).__name__,
+                        provider=self.provider.serialize())  # Use safe serialization
+                
+        # Validate content integrity before logging
+        if content and isinstance(content, str):
+            # Basic validation that content is complete
+            if content.count('{') != content.count('}') or \
+            content.count('[') != content.count(']'):
+                logger.warning("agent.content_integrity_check_failed",
+                            provider=self.provider.serialize())
 
-    return {
-        "response": content,
-        "raw_output": raw_response,
-        "timestamp": datetime.utcnow().isoformat()
-    }
+        return {
+            "response": content,
+            "raw_output": raw_response,
+            "timestamp": datetime.utcnow().isoformat()
+        }
