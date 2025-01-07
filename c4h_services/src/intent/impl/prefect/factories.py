@@ -48,22 +48,39 @@ def create_solution_task(config: Dict[str, Any]) -> AgentTaskConfig:
         retry_delay_seconds=30
     )
 
+"""
+Task factory functions for creating agent task configurations.
+Path: c4h_services/src/intent/impl/prefect/factories.py
+"""
+
 def create_coder_task(config: Dict[str, Any]) -> AgentTaskConfig:
     """Create coder agent task configuration."""
+    
+    # Create proper project instance if project config exists
+    project = None
+    if 'project' in config:
+        from c4h_agents.core.project import Project
+        project = Project.from_config(config)
+
     agent_config = {
         "llm_config": config.get("llm_config", {}),
         "logging": config.get("logging", {}),
         "providers": config.get("providers", {}),
         "backup": config.get("backup", {"enabled": True})  # Always enable backups for safety
     }
-    
+
+    # Add project if available
+    if project:
+        agent_config['project'] = project
+
     return AgentTaskConfig(
         agent_class=Coder,
         config=agent_config,
         task_name="coder",
         requires_approval=True,  # Code changes should be reviewed
         max_retries=1,  # Be conservative with retries for code changes
-        retry_delay_seconds=60
+        retry_delay_seconds=60,
+        project=project  # Pass project instance to task config
     )
 
 def create_assurance_task(config: Dict[str, Any]) -> AgentTaskConfig:

@@ -31,7 +31,20 @@ class AssetManager(BaseAgent):
         """Initialize asset manager with configuration and optional project"""
         super().__init__(config=config, project=project)
         
-        # Extract project info from context if available
+        # First try to use the Project instance if provided
+        if self.project:
+            self.source_root = self.project.paths.source
+            self.output_root = self.project.paths.root
+            self.backup_dir = self.project.paths.workspace / "backups"
+            self.project_path = self.project.paths.root
+            
+            logger.info("asset_manager.using_project",
+                       project_name=self.project.metadata.name,
+                       root=str(self.project.paths.root),
+                       workspace=str(self.project.paths.workspace))
+            return
+            
+        # Fall back to config-based project info
         project_info = None
         if isinstance(config, dict):
             project_info = config.get('project')
