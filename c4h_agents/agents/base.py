@@ -1,13 +1,6 @@
 """
 Base agent implementation with integrated LiteLLM configuration and Project support.
 Path: c4h_agents/agents/base.py
-
-Function Manifest:
-- BaseAgent:
-    * MODIFIED: __init__(self, config, project) -> Added optional project param
-    * MODIFIED: _get_agent_config() -> Added project config support
-    * MODIFIED: _resolve_model() -> Enhanced with project awareness
-    * NEW: resolve_path(path) -> Project-aware path resolution
 """
 
 from abc import ABC, abstractmethod
@@ -21,12 +14,12 @@ from functools import wraps
 import time
 import litellm
 from litellm import completion
-from config import locate_config, locate_keys
 import json
 from pathlib import Path
 
-# Import Project model with type hints
-from ..core.project import Project, ProjectPaths
+# Change relative import to absolute
+from c4h_agents.core.project import Project, ProjectPaths
+from c4h_agents.config import locate_config, locate_keys
 
 logger = structlog.get_logger()
 

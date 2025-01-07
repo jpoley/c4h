@@ -7,11 +7,13 @@ from dataclasses import dataclass
 import structlog
 from datetime import datetime, timezone
 from pathlib import Path
-from agents.base import BaseAgent, AgentResponse, LogDetail
-from skills.semantic_merge import SemanticMerge
-from skills.semantic_iterator import SemanticIterator
-from skills.asset_manager import AssetManager, AssetResult
-from skills.shared.types import ExtractConfig
+
+# Change relative imports to absolute
+from c4h_agents.agents.base import BaseAgent, AgentResponse, LogDetail
+from c4h_agents.skills.semantic_merge import SemanticMerge
+from c4h_agents.skills.semantic_iterator import SemanticIterator
+from c4h_agents.skills.asset_manager import AssetManager, AssetResult
+from c4h_agents.skills.shared.types import ExtractConfig
 
 logger = structlog.get_logger()
 
