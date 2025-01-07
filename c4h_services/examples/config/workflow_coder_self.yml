@@ -3,19 +3,21 @@
 # Project settings
 project:
   path: "/Users/jim/src/apps/c4h_ai_dev"  # Absolute path to project
-  workspace_root: "/Users/jim/src/apps/c4h_ai_dev/workspaces"
+  workspace_root: "workspaces"
 
 # Intent description
 intent:
   description: |
-    "- Design Constraints - read Agent Design Principles, all designs must be constrained by those principles"
-    "- Compare any proposed solution against the original code, do not lose any functionality, do not overdesign, stick to the principles"
-    "Intent - review base agent design"
-    "Implement a new skill, semantic_formater.py"
-    "it takes a blob of text with a prompt and returns a response"
-    "Model it in semantic_extractor.py, it will need its own configuration"
-    "both semantic_extractor and now semantic_formater are single shot skills"
-    "that take a blob with a configured prompt according to its configuration"
+    - Design Constraints - read Agent Design Principles, all designs must be constrained by those principles
+    - Compare any proposed solution against the original code, do not lose any functionality, do not overdesign, stick to the principles
+    Intent - review base agent design
+    Implement a new skill, semantic_formater.py
+    it takes a blob of text with a prompt and returns a response
+    Model it in semantic_extractor.py, it will need its own configuration section added to the system_config.yml
+    Do NOT break current config backwards compatibility
+    Do NOT lose exisiting functionality
+    both semantic_extractor and now semantic_formater are single shot skills
+    that take a blob with a configured prompt according to its configuration
 
 # Provider configuration
 providers:
