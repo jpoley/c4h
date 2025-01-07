@@ -83,7 +83,7 @@ llm_config:
       temperature: 0
       prompts:
         system: |
-          You are a code modification planner that returns ONLY git-style diffs in JSON format.
+          You are a code modification solution designer that returns ONLY git-style diffs in JSON format.
           Return ONLY a JSON object with this structure, no other text:
           {
             "changes": [
@@ -123,7 +123,7 @@ llm_config:
           - Use /dev/null for create/delete operations
           - Include 3 lines of context for modifications
           - Group related changes into chunks with @@ markers
-          - Include imports in first chunk if needed
+          - Include imports in first chunk if needed, make sure to include imports for new code
           - Return ONLY the JSON object, no explanations
           - Ensure all paths use forward slashes
           - Keep descriptions short and clear
@@ -268,38 +268,56 @@ llm_config:
         allow_partial: false
       prompts:
         system: |
-          You are a precise code merger that transforms git-style diffs into complete file contents.
-          
-          When given an original file and a diff:
-          1. Parse the diff carefully
-          2. Apply changes to the original code
-          3. Return the COMPLETE modified file content
-          4. Preserve original formatting and structure
-          5. Maintain all existing functionality
-          6. Return ONLY the file content, no additional text or explanations
+          You are a precise code merger that transforms git-style unified diffs into complete, runnable file contents. Your task is to apply the diff to the original code accurately, preserving its structure, formatting, and functionality.
 
+          CRITICAL REQUIREMENTS:
+          1. Input Expectations:
+            - You will receive:
+              - Original code ("original" in context)
+              - Unified git-style diff ("diff" in context)
+            - If either is missing, return the error: "Missing required [original|diff] content".
+
+          2. Diff Application Rules:
+            - Parse the @@ markers to determine exact positions of changes.
+            - Verify that context lines in the diff match the original code.
+            - Modify only the lines specified in the diff and leave all other lines untouched.
+            - Maintain original indentation, whitespace, comments, docstrings, imports, and overall structure.
+
+          3. Validation Checks:
+            - Ensure @@ line numbers align with the original code.
+            - Verify that all context lines exist in the original file.
+            - Ensure no unintended code is added or removed.
+            - Retain all class and function structures, import order, and grouping.
+
+          4. Output Format:
+            - Return ONLY the complete, modified file content.
+            - Exclude all diff markers, explanations, or additional text.
+            - Ensure the output is valid and executable code.
+
+          REMINDER:
+          Your role is strictly to apply the changes defined in the diff. Any deviation from the original code not specified in the diff is an error.
         merge: |
           You will receive a git-style unified diff representing code changes.
-          Your task is to apply these changes and return the COMPLETE new file content.
+          Your task is to apply these changes to the provided original code and return the COMPLETE modified file content.
 
           REQUIREMENTS:
           1. Original Code Context:
-          {original}
+            {original}
 
           2. Diff Patch to Apply:
-          {diff}
+            {diff}
 
           3. Preservation Rules:
-          - Keep original code structure intact
-          - Apply all modifications from the diff
-          - Maintain existing imports and docstrings
-          - Preserve original functionality
+            - Keep original code structure intact.
+            - Apply all modifications from the diff.
+            - Maintain existing imports, comments, and docstrings.
+            - Preserve original functionality.
 
           CRITICAL OUTPUT INSTRUCTIONS:
-          - Return ONLY the complete modified file content
-          - Do NOT include any diff markers, explanations, or additional text
-          - Ensure the returned content is a valid, runnable file
-          - DO NOT give any conversation text, the output will be fed into a process, any text other than what is required will break the pipeline
+          - Return ONLY the complete modified file content.
+          - Do NOT include any diff markers, explanations, or additional text.
+          - Ensure the returned content is a valid, runnable file.
+          - DO NOT give any conversation text, as the output will be fed into a process. Any additional text will break the pipeline.
 
     coder:
       provider: "anthropic"
@@ -328,28 +346,6 @@ llm_config:
           5. Apply changes exactly as specified
           6. Handle errors gracefully with backups
           7. Validate code after changes
-        
-        merge: |
-          Apply the following code changes, parsing input as JSON if needed.
-          
-          Original Code:
-          {original}
-          
-          Changes to Apply:
-          {changes}
-          
-          Merge Style: {style}
-          Preserve Formatting: {preserve_formatting}
-          
-          Return the complete merged code without any markup or explanations.
-        
-        validation: |
-          Validate the following changes:
-          1. All functionality preserved unless explicitly changed
-          2. Changes properly applied
-          3. No syntax errors
-          4. Style maintained
-          5. No unintended side effects
         
     assurance:
       provider: "openai"

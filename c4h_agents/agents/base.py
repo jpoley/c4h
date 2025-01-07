@@ -42,6 +42,14 @@ class LLMProvider(str, Enum):
     OPENAI = "openai"
     GEMINI = "gemini"
 
+    def __str__(self) -> str:
+        """Safe string conversion ensuring no interpolation issues"""
+        return str(self.value)
+
+    def serialize(self) -> str:
+        """Safe serialization for logging and persistence"""
+        return f"provider_{self.value}"
+
 @dataclass
 class AgentResponse:
     """Standard response format"""
@@ -430,21 +438,24 @@ class BaseAgent:
         """Format request message"""
         return str(context)
 
-    def _process_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
-        """Process LLM response"""
-        if self._should_log(LogDetail.DEBUG):
-            logger.debug("agent.processing_response",
-                        content_length=len(content) if content else 0,
-                        response_type=type(raw_response).__name__)
+def _process_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
+    """Process LLM response with safe logging"""
+    if self._should_log(LogDetail.DEBUG):
+        logger.debug("agent.processing_response",
+                    content_length=len(content) if content else 0,
+                    response_type=type(raw_response).__name__,
+                    provider=self.provider.serialize())  # Use safe serialization
             
-            logger.info("llm.raw_response",
-                    content=content,
-                    response=str(raw_response),
-                    model=self.model,
-                    provider=str(self.provider))
+    # Validate content integrity before logging
+    if content and isinstance(content, str):
+        # Basic validation that content is complete
+        if content.count('{') != content.count('}') or \
+           content.count('[') != content.count(']'):
+            logger.warning("agent.content_integrity_check_failed",
+                         provider=self.provider.serialize())
 
-        return {
-            "response": content,
-            "raw_output": raw_response,
-            "timestamp": datetime.utcnow().isoformat()
-        }
+    return {
+        "response": content,
+        "raw_output": raw_response,
+        "timestamp": datetime.utcnow().isoformat()
+    }
