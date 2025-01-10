@@ -301,12 +301,15 @@ llm_config:
           Your task is to apply these changes to the provided original code and return the COMPLETE modified file content.
 
           REQUIREMENTS:
+          ======================================================================
           1. Original Code Context:
             {original}
 
+          ======================================================================
           2. Diff Patch to Apply:
             {diff}
 
+          ======================================================================
           3. Preservation Rules:
             - Keep original code structure intact.
             - Apply all modifications from the diff.
