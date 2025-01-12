@@ -1,5 +1,6 @@
 """
-Base agent implementation with integrated LiteLLM configuration and Project support.
+Base agent implementation with integrated LiteLLM configuration, Project support,
+and automatic continuation handling for token limited responses.
 Path: c4h_agents/agents/base.py
 """
 
@@ -62,10 +63,10 @@ def log_operation(operation_name: str):
     """Operation logging decorator"""
     def decorator(func):
         @wraps(func)
-        async def wrapper(self, *args, **kwargs):
+        def wrapper(self, *args, **kwargs):
             start_time = time.time()
             try:
-                result = await func(self, *args, **kwargs)
+                result = func(self, *args, **kwargs)
                 self._update_metrics(time.time() - start_time, True)
                 return result
             except Exception as e:
@@ -101,12 +102,17 @@ class BaseAgent:
         self.model = agent_config.get('model', 'claude-3-opus-20240229')
         self.temperature = agent_config.get('temperature', 0)
         
+        # Get continuation settings
+        self.max_continuation_attempts = agent_config.get('max_continuation_attempts', 5)
+        self.continuation_token_buffer = agent_config.get('continuation_token_buffer', 1000)
+        
         # Initialize metrics with project context
         self.metrics = {
             "total_requests": 0,
             "successful_requests": 0,
             "failed_requests": 0,
             "total_duration": 0.0,
+            "continuation_attempts": 0,
             "last_error": None,
             "start_time": datetime.utcnow().isoformat(),
             "project": self.project.metadata.name if self.project else None
@@ -138,8 +144,140 @@ class BaseAgent:
             
         self.logger = structlog.get_logger().bind(**log_context)
         
-        logger.info(f"{self._get_agent_name()}.initialized", **log_context)
-        
+        logger.info(f"{self._get_agent_name()}.initialized", 
+                   continuation_settings={
+                       "max_attempts": self.max_continuation_attempts,
+                       "token_buffer": self.continuation_token_buffer
+                   },
+                   **log_context)
+
+    def _get_completion_with_continuation(
+        self, 
+        messages: List[Dict[str, str]],
+        max_attempts: Optional[int] = None
+    ) -> Tuple[str, Any]:
+        """
+        Get completion with automatic continuation handling - synchronous version.
+        """
+        try:
+            combined_content = []
+            attempt = 0
+            max_tries = max_attempts or self.max_continuation_attempts
+            
+            original_message_count = len(messages)
+            last_continuation_length = 0
+            
+            while attempt < max_tries:
+                # Log the attempt details
+                if attempt > 0:
+                    logger.info("llm.continuation_attempt",
+                            attempt=attempt,
+                            messages_count=len(messages),
+                            combined_length=len(''.join(combined_content)),
+                            last_chunk_length=last_continuation_length)
+                
+                # Synchronous completion
+                response = completion(
+                    model=self.model_str,
+                    messages=messages,
+                    temperature=self.temperature,
+                    api_base=self._get_provider_config(self.provider).get("api_base")
+                )
+
+                # Rest of the logic remains the same
+                if not response or not response.choices:
+                    logger.error("llm.no_response",
+                            attempt=attempt,
+                            provider=self.provider.serialize())
+                    break
+                    
+                choice = response.choices[0]
+                content = choice.message.content
+                
+                # Update metrics
+                self.metrics["continuation_attempts"] = attempt + 1
+                
+                # Check completion status
+                finish_reason = getattr(choice, 'finish_reason', None)
+                
+                if finish_reason == 'length':
+                    logger.info("llm.length_limit_reached", 
+                              attempt=attempt,
+                              content_length=last_continuation_length,
+                              total_length=len(''.join(combined_content)))
+                    
+                    # Add continuation prompt
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({
+                        "role": "user", 
+                        "content": "Continue exactly from where you left off, maintaining exact format and indentation. Do not repeat any content."
+                    })
+                    attempt += 1
+                else:
+                    logger.info("llm.completion_finished",
+                              finish_reason=finish_reason,
+                              final_length=len(''.join(combined_content)),
+                              continuation_count=attempt)
+                    break
+                    
+            final_content = ''.join(combined_content)
+            
+            if attempt >= max_tries:
+                logger.warning("llm.continuation_limit_reached",
+                             max_attempts=max_tries,
+                             final_length=len(final_content))
+            
+            # Log completion summary
+            logger.debug("llm.completion_summary",
+                        total_attempts=attempt + 1,
+                        original_messages=original_message_count,
+                        final_messages=len(messages),
+                        final_length=len(final_content))
+                
+            return final_content, response
+            
+        except Exception as e:
+            logger.error("llm.continuation_failed", error=str(e))
+            raise
+
+    def _process_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
+        """Process LLM response with integrity checks"""
+        if self._should_log(LogDetail.DEBUG):
+            logger.debug("agent.processing_response",
+                        content_length=len(content) if content else 0,
+                        response_type=type(raw_response).__name__,
+                        continuation_attempts=self.metrics["continuation_attempts"])
+            
+        # Log usage statistics if available
+        if hasattr(raw_response, 'usage'):
+            usage = raw_response.usage
+            logger.info("llm.token_usage",
+                       completion_tokens=getattr(usage, 'completion_tokens', 0),
+                       prompt_tokens=getattr(usage, 'prompt_tokens', 0),
+                       total_tokens=getattr(usage, 'total_tokens', 0))
+            
+        # Basic content integrity validation
+        if content and isinstance(content, str):
+            # Check for unmatched delimiters
+            delimiters = [
+                ('{', '}'),
+                ('[', ']'),
+                ('(', ')'),
+            ]
+            
+            for start, end in delimiters:
+                if content.count(start) != content.count(end):
+                    logger.warning("agent.content_integrity_check_failed",
+                                 start_char=start,
+                                 end_char=end,
+                                 start_count=content.count(start),
+                                 end_count=content.count(end))
+
+        return {
+            "response": content,
+            "raw_output": raw_response,
+            "timestamp": datetime.utcnow().isoformat()
+        }
 
     def _resolve_model(self, explicit_model: Optional[str], provider_config: Dict[str, Any]) -> str:
         """Resolve model using fallback chain"""
@@ -166,16 +304,12 @@ class BaseAgent:
     def _get_model_str(self) -> str:
         """Get the appropriate model string for the provider"""
         if self.provider == LLMProvider.OPENAI:
-            # OpenAI models don't need provider prefix
             return self.model
         elif self.provider == LLMProvider.ANTHROPIC:
-            # Anthropic models need anthropic/ prefix
             return f"anthropic/{self.model}"
         elif self.provider == LLMProvider.GEMINI:
-            # Gemini models need google/ prefix
             return f"google/{self.model}"
         else:
-            # Safe fallback
             return f"{self.provider.value}/{self.model}"
 
     def _get_provider_config(self, provider: LLMProvider) -> Dict[str, Any]:
@@ -183,7 +317,7 @@ class BaseAgent:
         return self.config.get("providers", {}).get(provider.value, {})
 
     def _get_agent_config(self) -> Dict[str, Any]:
-        """Extract relevant config for this agent."""
+        """Extract relevant config for this agent"""
         try:
             # If we have a project, use its configuration system
             if self.project:
@@ -375,59 +509,49 @@ class BaseAgent:
             raise ValueError(f"No prompt template found for type: {prompt_type}")
         return prompts[prompt_type]
 
-    def _ensure_loop(self):
-        try:
-            return asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            return loop
-
     def process(self, context: Dict[str, Any]) -> AgentResponse:
-        """Synchronous process interface"""
-        loop = self._ensure_loop()
-        return loop.run_until_complete(self._process_async(context))
+        """Main process entry point"""
+        return self._process(context)
 
     @log_operation("process")
-    async def _process_async(self, context: Dict[str, Any]) -> AgentResponse:
-        """Internal async implementation"""
+    def _process(self, context: Dict[str, Any]) -> AgentResponse:
+        """Internal synchronous implementation"""
         try:
             if self._should_log(LogDetail.DETAILED):
                 logger.info("agent.processing",
-                          context_keys=list(context.keys()) if context else None)
+                        context_keys=list(context.keys()) if context else None)
 
-            # Get required data using discovery pattern
+            # Get required data using discovery pattern 
             data = self._get_data(context)
             
             # Format request before sending
             system_message = self._get_system_message()
             user_message = self._format_request(data)
             
-            # Log the complete prompt
-            logger.info("llm.prompt",
-                       agent=self._get_agent_name(),
-                       system_prompt=system_message,
-                       user_prompt=user_message,
-                       model=self.model,
-                       provider=self.provider.serialize())
-
             messages = [
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": user_message}
             ]
-            
-            response = completion(
-                model=self.model_str,
-                messages=messages,
-                temperature=self.temperature,
-                api_base=self._get_provider_config(self.provider).get("api_base")
-            )
 
-            if response and response.choices:
-                content = response.choices[0].message.content
+            # Use continuation handler for completion
+            try:
+                content, raw_response = self._get_completion_with_continuation(messages)
+                
+                # Process response with integrity checks
+                processed_data = self._process_response(content, raw_response)
+                
                 return AgentResponse(
                     success=True,
-                    data=self._process_response(content, response)
+                    data=processed_data,
+                    error=None
+                )
+                
+            except Exception as e:
+                logger.error("llm.completion_failed", error=str(e))
+                return AgentResponse(
+                    success=False,
+                    data={},
+                    error=f"LLM completion failed: {str(e)}"
                 )
                 
         except Exception as e:
@@ -437,25 +561,3 @@ class BaseAgent:
     def _format_request(self, context: Dict[str, Any]) -> str:
         """Format request message"""
         return str(context)
-
-    def _process_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
-        """Process LLM response with safe logging"""
-        if self._should_log(LogDetail.DEBUG):
-            logger.debug("agent.processing_response",
-                        content_length=len(content) if content else 0,
-                        response_type=type(raw_response).__name__,
-                        provider=self.provider.serialize())  # Use safe serialization
-                
-        # Validate content integrity before logging
-        if content and isinstance(content, str):
-            # Basic validation that content is complete
-            if content.count('{') != content.count('}') or \
-            content.count('[') != content.count(']'):
-                logger.warning("agent.content_integrity_check_failed",
-                            provider=self.provider.serialize())
-
-        return {
-            "response": content,
-            "raw_output": raw_response,
-            "timestamp": datetime.utcnow().isoformat()
-        }

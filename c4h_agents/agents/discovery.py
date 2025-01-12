@@ -96,80 +96,138 @@ class DiscoveryAgent(BaseAgent):
     """Update to _run_tartxt method in discovery.py"""
 
     def _run_tartxt(self, project_path: str) -> DiscoveryResult:
+        """Run tartxt discovery tool to analyze project files.
+        
+        Args:
+            project_path: Path to project root
+            
+        Returns:
+            DiscoveryResult containing file manifest and output
+            
+        The function handles tartxt configuration including:
+        - Input path resolution against project root  
+        - Exclusion pattern handling
+        - Output format selection
+        """
         try:
             # Convert to Path and resolve
             base_path = Path(project_path).resolve()
             
             # Get resolved input paths
             input_paths = self._resolve_input_paths(base_path)
+            if not input_paths:
+                raise ValueError("No input paths configured or resolved")
             
             # Get tartxt script path - fail fast if not configured
             script_path = self.tartxt_config.get('script_path')
             if not script_path:
                 raise ValueError("tartxt_config must include 'script_path'")
                 
-            if not Path(script_path).is_file():
+            script_path = Path(script_path)
+            if not script_path.is_file():
                 raise ValueError(f"tartxt script not found at: {script_path}")
-            
-            # Build tartxt command with configured script path
-            cmd = [sys.executable, str(Path(script_path).resolve())]
-            
-            # Add exclusions
-            for exclude in self.tartxt_config.get('exclusions', []):
-                cmd.extend(['-x', exclude])
-            
-            # Add output options
-            if self.tartxt_config.get('output_type') == "file":
-                cmd.extend(['-f', self.tartxt_config.get('output_file', 'tartxt_output.txt')])
+
+            # Start building command with python interpreter and script
+            cmd = [sys.executable, str(script_path.resolve())]
+                
+            # Process exclusions - normalize to list
+            exclusions = self.tartxt_config.get('exclusions', [])
+            if isinstance(exclusions, str):
+                exclusion_list = [x.strip() for x in exclusions.split(',') if x.strip()]
+            elif isinstance(exclusions, (list, tuple)):
+                exclusion_list = [str(x).strip() for x in exclusions if x]
             else:
-                cmd.append('-o')
+                logger.warning("discovery.invalid_exclusions",
+                            type=type(exclusions).__name__,
+                            using="default empty list")
+                exclusion_list = []
+
+            # Add exclusions as a single -x argument with comma-separated patterns
+            if exclusion_list:
+                cmd.extend(['-x', ','.join(exclusion_list)])
+                logger.debug("discovery.tartxt_command.exclusions",
+                            patterns=exclusion_list)
+
+            # Configure output
+            if self.tartxt_config.get('output_type') == "file":
+                output_file = self.tartxt_config.get('output_file', 'tartxt_output.txt')
+                cmd.extend(['-f', output_file])
+            else:
+                cmd.append('-o')  # stdout output
 
             # Add input paths last
             cmd.extend(input_paths)
 
+            # Log complete command
             logger.debug("discovery.tartxt_command",
                         cmd=cmd,
-                        paths=input_paths,
+                        input_paths=input_paths,
                         project_path=str(base_path),
-                        script_path=script_path)
+                        script_path=str(script_path))
 
-            # Run tartxt with stdout capture  
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            # Run tartxt with output capture
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    cwd=str(base_path)  # Run from project root
+                )
+            except subprocess.CalledProcessError as e:
+                logger.error("discovery.tartxt_execution_failed", 
+                            error=str(e),
+                            stderr=e.stderr,
+                            returncode=e.returncode)
+                return DiscoveryResult(
+                    success=False,
+                    files={},
+                    raw_output=e.stderr,
+                    project_path=str(base_path),
+                    error=f"tartxt failed with exit code {e.returncode}: {e.stderr}"
+                )
+
+            # Parse output and return result
+            files = self._parse_manifest(result.stdout)
+            logger.info("discovery.complete",
+                    file_count=len(files),
+                    project_path=str(base_path))
 
             return DiscoveryResult(
                 success=True,
-                files=self._parse_manifest(result.stdout),
+                files=files,
                 raw_output=result.stdout,
                 project_path=str(base_path)
             )
 
-        except subprocess.CalledProcessError as e:
-            logger.error("discovery.tartxt_failed", 
-                        error=str(e),
-                        stderr=e.stderr)
-            return DiscoveryResult(
-                success=False,
-                files={},
-                raw_output=e.stderr,
-                project_path=str(base_path),
-                error=str(e)
-            )
         except ValueError as e:
+            # Configuration/validation errors
             logger.error("discovery.config_error",
-                        error=str(e))
+                        error=str(e),
+                        project_path=project_path)
             return DiscoveryResult(
                 success=False,
                 files={},
                 raw_output="",
-                project_path=str(base_path),
+                project_path=str(project_path),
                 error=str(e)
             )
-     
+            
+        except Exception as e:
+            # Unexpected errors
+            logger.error("discovery.unexpected_error",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        project_path=project_path)
+            return DiscoveryResult(
+                success=False,
+                files={},
+                raw_output="",
+                project_path=str(project_path),
+                error=f"Unexpected error: {str(e)}"
+            )
+
+
     def process(self, context: Dict[str, Any]) -> AgentResponse:
         """Process a project discovery request."""
         try:
