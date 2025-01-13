@@ -72,17 +72,23 @@ class Coder(BaseAgent):
             data = self._get_data(context)
             input_data = data.get('input_data', {})
             
-            # Configure iterator to find repeating blocks
-            self.iterator.configure(
-                content=input_data.get('response', ''),
-                config=ExtractConfig(
-                    instruction="Extract each code change object",
-                    format="json"  # Semantic Iterator will handle the JSON parsing
-                )
-            )
+            # Pass response through as iterator's content 
+            iterator_result = self.iterator.process({
+                'content': input_data.get('response', ''),
+                'input_data': input_data  # Include full context
+            })
 
             # Track results
             results = []
+            
+            # Check iterator success
+            if not iterator_result.success:
+                logger.error("coder.iterator_failed", error=iterator_result.error)
+                return AgentResponse(
+                    success=False,
+                    data={},
+                    error=f"Iterator failed: {iterator_result.error}"
+                )
             
             # Let iterator find and process each change
             for change in self.iterator:
