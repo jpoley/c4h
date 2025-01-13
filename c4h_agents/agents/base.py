@@ -240,45 +240,91 @@ class BaseAgent:
             logger.error("llm.continuation_failed", error=str(e))
             raise
 
+    def _get_llm_content(self, response: Any) -> Any:
+        """
+        Extract content from LLM response regardless of provider/library.
+        Handles raw strings, ModelResponse objects, and dictionaries.
+        
+        Args:
+            response: Raw response from LLM
+            
+        Returns:
+            Extracted content in the most appropriate format
+        """
+        try:
+            # Handle ModelResponse objects
+            if hasattr(response, 'choices') and response.choices:
+                content = response.choices[0].message.content
+            # Handle dictionary responses
+            elif isinstance(response, dict):
+                content = response.get('content', response.get('text', response))
+            else:
+                content = str(response)
+                
+            # Try to parse JSON if it's a string
+            if isinstance(content, str):
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    return content
+                    
+            return content
+            
+        except Exception as e:
+            logger.error("llm.content_extraction_failed", error=str(e))
+            return str(response)
+
     def _process_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
         """Process LLM response with integrity checks"""
-        if self._should_log(LogDetail.DEBUG):
-            logger.debug("agent.processing_response",
-                        content_length=len(content) if content else 0,
-                        response_type=type(raw_response).__name__,
-                        continuation_attempts=self.metrics["continuation_attempts"])
+        try:
+            # Extract content from raw response if needed
+            processed_content = self._get_llm_content(content)
             
-        # Log usage statistics if available
-        if hasattr(raw_response, 'usage'):
-            usage = raw_response.usage
-            logger.info("llm.token_usage",
-                       completion_tokens=getattr(usage, 'completion_tokens', 0),
-                       prompt_tokens=getattr(usage, 'prompt_tokens', 0),
-                       total_tokens=getattr(usage, 'total_tokens', 0))
-            
-        # Basic content integrity validation
-        if content and isinstance(content, str):
-            # Check for unmatched delimiters
-            delimiters = [
-                ('{', '}'),
-                ('[', ']'),
-                ('(', ')'),
-            ]
-            
-            for start, end in delimiters:
-                if content.count(start) != content.count(end):
-                    logger.warning("agent.content_integrity_check_failed",
-                                 start_char=start,
-                                 end_char=end,
-                                 start_count=content.count(start),
-                                 end_count=content.count(end))
+            if self._should_log(LogDetail.DEBUG):
+                logger.debug("agent.processing_response",
+                            content_length=len(str(processed_content)) if processed_content else 0,
+                            response_type=type(raw_response).__name__,
+                            continuation_attempts=self.metrics["continuation_attempts"])
+                
+            # Log usage statistics if available
+            if hasattr(raw_response, 'usage'):
+                usage = raw_response.usage
+                logger.info("llm.token_usage",
+                        completion_tokens=getattr(usage, 'completion_tokens', 0),
+                        prompt_tokens=getattr(usage, 'prompt_tokens', 0),
+                        total_tokens=getattr(usage, 'total_tokens', 0))
+                
+            # Basic content integrity validation
+            if processed_content and isinstance(processed_content, str):
+                # Check for unmatched delimiters
+                delimiters = [
+                    ('{', '}'),
+                    ('[', ']'),
+                    ('(', ')'),
+                ]
+                
+                for start, end in delimiters:
+                    if processed_content.count(start) != processed_content.count(end):
+                        logger.warning("agent.content_integrity_check_failed",
+                                    start_char=start,
+                                    end_char=end,
+                                    start_count=processed_content.count(start),
+                                    end_count=processed_content.count(end))
 
-        return {
-            "response": content,
-            "raw_output": raw_response,
-            "timestamp": datetime.utcnow().isoformat()
-        }
+            return {
+                "response": processed_content,
+                "raw_output": str(raw_response),  # Ensure serializable
+                "timestamp": datetime.utcnow().isoformat()
+            }
 
+        except Exception as e:
+            logger.error("response_processing.failed", error=str(e))
+            return {
+                "response": str(content),
+                "raw_output": str(raw_response),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+    
     def _resolve_model(self, explicit_model: Optional[str], provider_config: Dict[str, Any]) -> str:
         """Resolve model using fallback chain"""
         # 1. Use explicitly passed model if provided
@@ -561,3 +607,9 @@ class BaseAgent:
     def _format_request(self, context: Dict[str, Any]) -> str:
         """Format request message"""
         return str(context)
+    
+    def _get_llm_content(self, response: Any) -> str:
+        """Extract content from LLM response regardless of provider/library"""
+        if hasattr(response, 'choices') and response.choices:
+            return response.choices[0].message.content
+        return str(response)

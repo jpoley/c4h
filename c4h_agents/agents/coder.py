@@ -2,18 +2,16 @@
 Primary coder agent implementation using semantic extraction.
 Path: c4h_agents/agents/coder.py
 """
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 from dataclasses import dataclass
 import structlog
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Change relative imports to absolute
-from c4h_agents.agents.base import BaseAgent, AgentResponse, LogDetail
+from c4h_agents.agents.base import BaseAgent, AgentResponse
 from c4h_agents.skills.semantic_merge import SemanticMerge
 from c4h_agents.skills.semantic_iterator import SemanticIterator
-from c4h_agents.skills.asset_manager import AssetManager, AssetResult
-from c4h_agents.skills.shared.types import ExtractConfig
+from c4h_agents.skills.asset_manager import AssetManager
 
 logger = structlog.get_logger()
 
@@ -37,15 +35,11 @@ class Coder(BaseAgent):
         
         # Get coder-specific config 
         coder_config = self._get_agent_config()
-        
-        # Initialize backup location
         backup_path = Path(coder_config.get('backup', {}).get('path', 'workspaces/backups'))
         
         # Create semantic tools
         self.iterator = SemanticIterator(config=config)
         self.merger = SemanticMerge(config=config)
-        
-        # Setup asset management
         self.asset_manager = AssetManager(
             backup_enabled=coder_config.get('backup_enabled', True),
             backup_dir=backup_path,
@@ -55,12 +49,7 @@ class Coder(BaseAgent):
         
         # Initialize metrics
         self.operation_metrics = CoderMetrics()
-        
         logger.info("coder.initialized", backup_path=str(backup_path))
-
-    def _get_required_keys(self) -> List[str]:
-        """Define keys required by coder agent."""
-        return ['input_data']  # Only need the raw input
 
     def process(self, context: Dict[str, Any]) -> AgentResponse:
         """Process code changes using semantic extraction"""
@@ -68,41 +57,33 @@ class Coder(BaseAgent):
         logger.debug("coder.input_data", data=context)
 
         try:
-            # Get raw input data
+            # Get content from input
             data = self._get_data(context)
-            input_data = data.get('input_data', {})
+            content = self._get_llm_content(data.get('input_data', {}))
             
-            # Pass response through as iterator's content 
+            # Get changes from iterator 
             iterator_result = self.iterator.process({
-                'content': input_data.get('response', ''),
-                'input_data': input_data  # Include full context
+                'content': content,
+                'input_data': data.get('input_data', {})
             })
 
-            # Track results
-            results = []
-            
-            # Check iterator success
             if not iterator_result.success:
                 logger.error("coder.iterator_failed", error=iterator_result.error)
                 return AgentResponse(
-                    success=False,
+                    success=False, 
                     data={},
                     error=f"Iterator failed: {iterator_result.error}"
                 )
             
-            # Let iterator find and process each change
+            # Process each change
+            results = []
             for change in self.iterator:
                 logger.debug("coder.processing_change", change=change)
                 result = self.asset_manager.process_action(change)
                 
                 if result.success:
-                    logger.info("coder.change_applied",
-                            file=str(result.path))
                     self.operation_metrics.successful_changes += 1
                 else:
-                    logger.error("coder.change_failed", 
-                            file=str(result.path),
-                            error=result.error)
                     self.operation_metrics.failed_changes += 1
                     self.operation_metrics.error_count += 1
                 
@@ -110,13 +91,8 @@ class Coder(BaseAgent):
                 results.append(result)
 
             success = bool(results) and any(r.success for r in results)
-            
-            # Update final metrics
             self.operation_metrics.end_time = datetime.now(timezone.utc).isoformat()
-            if self._should_log(LogDetail.DETAILED):
-                logger.info("coder.metrics_final",
-                          metrics=vars(self.operation_metrics))
-                
+            
             return AgentResponse(
                 success=success,
                 data={
