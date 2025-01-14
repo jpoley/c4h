@@ -86,13 +86,10 @@ class FastExtractor(BaseAgent):
                 logger.warning("fast_extraction.failed", error=result.error)
                 return FastItemIterator([])
 
-            # Extract items from response
+            # Use base agent's content extraction
+            content = self._get_llm_content(result.data)
             try:
-                content = result.data.get('response', '{}')
-                if isinstance(content, str):
-                    items = json.loads(content)
-                else:
-                    items = content
+                items = json.loads(content) if isinstance(content, str) else content
                 if isinstance(items, dict):
                     items = [items]
                 elif not isinstance(items, list):

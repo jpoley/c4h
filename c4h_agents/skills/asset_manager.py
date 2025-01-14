@@ -1,5 +1,5 @@
 """
-Asset management with Project-aware file system operations.
+Asset management with minimal processing and LLM-first design.
 Path: c4h_agents/skills/asset_manager.py
 """
 
@@ -11,8 +11,7 @@ import shutil
 from datetime import datetime
 
 from c4h_agents.agents.base import BaseAgent, AgentResponse
-from c4h_agents.core.project import Project
-from c4h_agents.config import locate_config
+from c4h_agents.skills.semantic_merge import SemanticMerge
 
 logger = structlog.get_logger()
 
@@ -25,193 +24,111 @@ class AssetResult:
     error: Optional[str] = None
 
 class AssetManager(BaseAgent):
-    """Manages asset operations with project-aware file system handling"""
+    """Manages file operations with simple backup support"""
     
-    def __init__(self, config: Dict[str, Any] = None, project: Optional[Project] = None, **kwargs):
-        """Initialize asset manager with configuration and optional project"""
-        super().__init__(config=config, project=project)
+    def __init__(self, config: Dict[str, Any] = None, **kwargs):
+        """Initialize with basic config and backup settings"""
+        super().__init__(config=config)
         
-        # First try to use the Project instance if provided
-        if self.project:
-            self.source_root = self.project.paths.source
-            self.output_root = self.project.paths.root
-            self.backup_dir = self.project.paths.workspace / "backups"
-            self.project_path = self.project.paths.root
-            
-            logger.info("asset_manager.using_project",
-                       project_name=self.project.metadata.name,
-                       root=str(self.project.paths.root),
-                       workspace=str(self.project.paths.workspace))
-            return
-            
-        # Fall back to config-based project info
-        project_info = None
-        if isinstance(config, dict):
-            project_info = config.get('project')
-
-        # Initialize paths based on project context
-        if project_info:
-            project_path = Path(project_info.get('path', '.')).resolve()
-            workspace_root = project_info.get('workspace_root')
-            if workspace_root:
-                workspace_path = Path(workspace_root) if Path(workspace_root).is_absolute() else project_path / workspace_root
+        # Get project path from config if available
+        self.project_path = None
+        if isinstance(config, dict) and 'project' in config:
+            project_config = config['project']
+            if isinstance(project_config, dict):
+                self.project_path = Path(project_config.get('path', '.')).resolve()
+                workspace_path = Path(project_config.get('workspace_root', 'workspaces'))
+                if not workspace_path.is_absolute():
+                    workspace_path = self.project_path / workspace_path
+                self.backup_dir = workspace_path / "backups"
             else:
-                workspace_path = project_path / 'workspaces'
-
-            self.source_root = project_path
-            self.output_root = project_path
-            self.backup_dir = workspace_path / "backups"
-            self.project_path = project_path
-
-            logger.info("asset_manager.project_paths",
-                       project_path=str(project_path),
-                       workspace_root=str(workspace_path))
+                # Handle Project instance
+                self.project_path = project_config.paths.root
+                self.backup_dir = project_config.paths.workspace / "backups"
         else:
-            # Legacy path handling for backward compatibility
-            asset_config = locate_config(self.config, "asset_manager")
-            paths = asset_config.get('paths', {})
-            self.source_root = Path(paths.get('source', '.')).resolve()
-            self.output_root = Path(paths.get('output', paths.get('project_root', '.'))).resolve()
-            self.backup_dir = (self.output_root / paths.get('backup_dir', 'workspaces/backups')).resolve()
-            self.project_path = None
+            # Fallback for no project config
+            self.backup_dir = Path(kwargs.get('backup_dir', 'workspaces/backups'))
 
-        # Configure backup settings
+        # Configure backup and create merger
         self.backup_enabled = kwargs.get('backup_enabled', True)
         if self.backup_enabled:
             self.backup_dir.mkdir(parents=True, exist_ok=True)
-            
-        # Create semantic merger with config
+        
+        # Get semantic merger
         self.merger = kwargs.get('merger')
         if not self.merger:
-            from c4h_agents.skills.semantic_merge import SemanticMerge
-            self.merger = SemanticMerge(config=self.config)
+            self.merger = SemanticMerge(config=config)
 
         logger.info("asset_manager.initialized",
                    backup_enabled=self.backup_enabled,
                    backup_dir=str(self.backup_dir),
-                   source_root=str(self.source_root),
-                   output_root=str(self.output_root),
                    project_path=str(self.project_path) if self.project_path else None)
 
-    def _normalize_path(self, path: Union[str, Path]) -> Path:
-        """Normalize path using project context if available"""
-        path = Path(str(path))
-        
-        # If project context is available, normalize against project root
-        if self.project_path:
-            if path.is_absolute():
-                return path
-            return (self.project_path / path).resolve()
-            
-        # Legacy normalization
-        logger.debug("asset_manager.normalize_path.legacy",
-                    input_path=str(path),
-                    source_root=str(self.source_root),
-                    output_root=str(self.output_root))
-        
-        if path.is_absolute():
-            logger.debug("asset_manager.normalize_path.absolute", path=str(path))
-            return path
-                
-        normalized = (self.output_root / path).resolve()
-        logger.debug("asset_manager.normalize_path.result",
-                    input=str(path),
-                    normalized=str(normalized))
-        return normalized
-
-    def _get_relative_path(self, path: Union[str, Path]) -> Path:
-        """Get path relative to project root"""
-        path = self._normalize_path(path)
+    def process_action(self, action: Union[str, Dict[str, Any]]) -> AssetResult:
+        """Process single file action focusing on path handling and backup"""
         try:
-            if self.project_path:
-                return path.relative_to(self.project_path)
-            return path.relative_to(self.output_root)
-        except ValueError:
-            return path
-
-    def _get_next_backup_path(self, path: Path) -> Path:
-        """Generate backup path maintaining directory structure"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        rel_path = self._get_relative_path(path)
-        backup_path = self.backup_dir / timestamp / rel_path
-        
-        logger.debug("asset_manager.backup_path_generated",
-                    original=str(path),
-                    relative=str(rel_path),
-                    backup=str(backup_path))
-                    
-        return backup_path
-
-    def process_action(self, action: Dict[str, Any]) -> AssetResult:
-        """Process a single asset action with project awareness"""
-        try:
-            # Extract file path using common keys
+            # Find file path in action using semantic extractor pattern
             file_path = None
             if isinstance(action, dict):
+                # Check common path keys
                 for key in ['file_path', 'path', 'file', 'filename']:
                     if key in action and action[key]:
-                        file_path = str(action[key])
+                        file_path = action[key]
                         break
-            
+                    
             if not file_path:
                 raise ValueError("No file path found in action")
-            
-            # Use project-aware path resolution
-            path = self._normalize_path(file_path)
-            logger.debug("asset.processing", 
-                        input_path=file_path,
-                        resolved_path=str(path),
-                        project=str(self.project_path) if self.project_path else None)
 
-            # Create backup if enabled and file exists
+            # Resolve path using project context if available 
+            path = Path(file_path)
+            if not path.is_absolute() and self.project_path:
+                path = (self.project_path / path).resolve()
+
+            # Create backup if needed
             backup_path = None
             if self.backup_enabled and path.exists():
-                backup_path = self._get_next_backup_path(path)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup_path = self.backup_dir / timestamp
+                if self.project_path:
+                    try:
+                        rel_path = path.relative_to(self.project_path)
+                        backup_path = backup_path / rel_path
+                    except ValueError:
+                        backup_path = backup_path / path.name
+                else:
+                    backup_path = backup_path / path.name
+                    
                 backup_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, backup_path)
-                logger.info("asset.backup_created", 
-                          original=str(path),
-                          backup=str(backup_path))
 
-            # Let semantic merge handle the content/diff/merge logic
+            # Let merger handle content merging/creation
             merge_result = self.merger.process(action)
-            
             if not merge_result.success:
                 return AssetResult(
                     success=False,
                     path=path,
                     error=merge_result.error
                 )
-            
+                
             content = merge_result.data.get('response')
             if not content:
                 return AssetResult(
                     success=False,
-                    path=path, 
+                    path=path,
                     error="No content after merge"
                 )
 
-            # Ensure parent directory exists
+            # Write final content
             path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Write the final content
             path.write_text(content)
-            logger.info("asset.write_success", 
-                       path=str(path),
-                       relative=str(self._get_relative_path(path)),
-                       project=str(self.project_path) if self.project_path else None)
-
-            return AssetResult(
-                success=True,
-                path=path,
-                backup_path=backup_path
-            )
+            
+            return AssetResult(success=True, path=path, backup_path=backup_path)
 
         except Exception as e:
             logger.error("asset.process_failed", 
-                        error=str(e),
-                        path=str(path) if 'path' in locals() else None,
-                        project=str(self.project_path) if self.project_path else None)
+                error=str(e),
+                path=str(path) if 'path' in locals() else None,  
+                project=str(self.project_path) if self.project_path else None
+            )
             return AssetResult(
                 success=False,
                 path=path if 'path' in locals() else Path('.'),
@@ -221,18 +138,15 @@ class AssetManager(BaseAgent):
     def process(self, context: Dict[str, Any]) -> AgentResponse:
         """Process asset operations with standard agent interface"""
         try:
-            result = self.process_action(context.get('input_data', {}))
+            result = self.process_action(context)
             return AgentResponse(
                 success=result.success,
                 data={
                     "path": str(result.path),
-                    "backup_path": str(result.backup_path) if result.backup_path else None,
-                    "raw_output": context.get('raw_output', '')
+                    "backup_path": str(result.backup_path) if result.backup_path else None
                 },
                 error=result.error
             )
         except Exception as e:
-            logger.error("asset_manager.process_failed", 
-                        error=str(e),
-                        project=str(self.project_path) if self.project_path else None)
+            logger.error("asset_manager.process_failed", error=str(e))
             return AgentResponse(success=False, data={}, error=str(e))

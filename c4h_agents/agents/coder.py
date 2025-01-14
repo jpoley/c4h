@@ -78,7 +78,9 @@ class Coder(BaseAgent):
             # Process each change
             results = []
             for change in self.iterator:
-                logger.debug("coder.processing_change", change=change)
+                logger.debug("coder.processing_change", 
+                            type=type(change).__name__,  # See what type we're dealing with
+                            change=repr(change) )              # Original logging
                 result = self.asset_manager.process_action(change)
                 
                 if result.success:

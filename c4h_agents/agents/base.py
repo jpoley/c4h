@@ -608,8 +608,13 @@ class BaseAgent:
         """Format request message"""
         return str(context)
     
-    def _get_llm_content(self, response: Any) -> str:
+    def _get_llm_content(self, response: Any) -> Any:
         """Extract content from LLM response regardless of provider/library"""
+        # Handle dictionary response with raw_output
+        if isinstance(response, dict) and 'raw_output' in response:
+            response = response['raw_output']
+            
+        # Handle ModelResponse objects
         if hasattr(response, 'choices') and response.choices:
             return response.choices[0].message.content
         return str(response)
