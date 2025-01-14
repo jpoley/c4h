@@ -75,7 +75,7 @@ class FastExtractor(BaseAgent):
         try:
             logger.debug("fast_extractor.creating_iterator",
                         content_type=type(content).__name__)
-                        
+                            
             # Use synchronous process instead of async
             result = self.process({
                 'content': content,
@@ -86,20 +86,31 @@ class FastExtractor(BaseAgent):
                 logger.warning("fast_extraction.failed", error=result.error)
                 return FastItemIterator([])
 
-            # Use base agent's content extraction
-            content = self._get_llm_content(result.data)
+            # Get response content from standard location
+            content = result.data.get('response')
+            if content is None:
+                logger.error("fast_extraction.no_content")
+                return FastItemIterator([])
+                
             try:
-                items = json.loads(content) if isinstance(content, str) else content
+                # Parse JSON if needed
+                if isinstance(content, str):
+                    items = json.loads(content)
+                else:
+                    items = content
+                    
+                # Normalize to list
                 if isinstance(items, dict):
                     items = [items]
                 elif not isinstance(items, list):
                     items = []
+                    
+                logger.info("fast_extraction.complete", items_found=len(items))
+                return FastItemIterator(items)
+
             except json.JSONDecodeError as e:
                 logger.error("fast_extraction.parse_error", error=str(e))
-                items = []
-
-            logger.info("fast_extraction.complete", items_found=len(items))
-            return FastItemIterator(items)
+                return FastItemIterator([])
 
         except Exception as e:
             logger.error("fast_extraction.failed", error=str(e))

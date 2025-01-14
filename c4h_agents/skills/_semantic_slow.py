@@ -43,6 +43,7 @@ class SlowItemIterator:
 
             # Handle extraction result
             if result.success:
+                # Get content from standard response location 
                 content = result.data.get('response', '')
                 
                 # Handle NO_MORE_ITEMS as clean completion
@@ -62,14 +63,14 @@ class SlowItemIterator:
                         content = json.loads(content)
                 except json.JSONDecodeError:
                     pass  # Keep original string if not JSON
-                    
+                        
                 self._position += 1
                 return content
 
             else:
                 logger.warning("slow_extraction.failed", 
-                             error=result.error,
-                             position=self._position)
+                            error=result.error,
+                            position=self._position)
                 self._exhausted = True
                 raise StopIteration
 
@@ -79,10 +80,6 @@ class SlowItemIterator:
                             error=str(e), 
                             position=self._position)
             raise StopIteration
-
-    def has_items(self) -> bool:
-        """Check if iterator has returned any items"""
-        return self._position > 0
 
 
 class SlowExtractor(BaseAgent):

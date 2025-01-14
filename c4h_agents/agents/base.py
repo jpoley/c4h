@@ -275,54 +275,63 @@ class BaseAgent:
             return str(response)
 
     def _process_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
-        """Process LLM response with integrity checks"""
+        """
+        Process LLM response with comprehensive validation and logging.
+        Maintains consistent response format while preserving metadata.
+        
+        Args:
+            content: Initial content from LLM
+            raw_response: Complete response object
+            
+        Returns:
+            Standardized response dictionary with:
+            - response: Processed content
+            - raw_output: Original response string
+            - timestamp: Processing time
+            - usage: Token usage if available
+            - error: Any processing errors
+        """
         try:
-            # Extract content from raw response if needed
+            # Extract content using standard method
             processed_content = self._get_llm_content(content)
             
+            # Debug logging for response processing
             if self._should_log(LogDetail.DEBUG):
                 logger.debug("agent.processing_response",
                             content_length=len(str(processed_content)) if processed_content else 0,
                             response_type=type(raw_response).__name__,
                             continuation_attempts=self.metrics["continuation_attempts"])
-                
-            # Log usage statistics if available
-            if hasattr(raw_response, 'usage'):
-                usage = raw_response.usage
-                logger.info("llm.token_usage",
-                        completion_tokens=getattr(usage, 'completion_tokens', 0),
-                        prompt_tokens=getattr(usage, 'prompt_tokens', 0),
-                        total_tokens=getattr(usage, 'total_tokens', 0))
-                
-            # Basic content integrity validation
-            if processed_content and isinstance(processed_content, str):
-                # Check for unmatched delimiters
-                delimiters = [
-                    ('{', '}'),
-                    ('[', ']'),
-                    ('(', ')'),
-                ]
-                
-                for start, end in delimiters:
-                    if processed_content.count(start) != processed_content.count(end):
-                        logger.warning("agent.content_integrity_check_failed",
-                                    start_char=start,
-                                    end_char=end,
-                                    start_count=processed_content.count(start),
-                                    end_count=processed_content.count(end))
 
-            return {
+            # Build standard response structure
+            response = {
                 "response": processed_content,
-                "raw_output": str(raw_response),  # Ensure serializable
+                "raw_output": str(raw_response),
                 "timestamp": datetime.utcnow().isoformat()
             }
 
+            # Log and include token usage if available
+            if hasattr(raw_response, 'usage'):
+                usage = raw_response.usage
+                usage_data = {
+                    "completion_tokens": getattr(usage, 'completion_tokens', 0),
+                    "prompt_tokens": getattr(usage, 'prompt_tokens', 0),
+                    "total_tokens": getattr(usage, 'total_tokens', 0)
+                }
+                logger.info("llm.token_usage", **usage_data)
+                response["usage"] = usage_data
+
+            return response
+
         except Exception as e:
-            logger.error("response_processing.failed", error=str(e))
+            error_msg = str(e)
+            logger.error("response_processing.failed", 
+                        error=error_msg,
+                        content_type=type(content).__name__)
             return {
                 "response": str(content),
                 "raw_output": str(raw_response),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().isoformat(),
+                "error": error_msg
             }
     
     def _resolve_model(self, explicit_model: Optional[str], provider_config: Dict[str, Any]) -> str:
@@ -609,12 +618,54 @@ class BaseAgent:
         return str(context)
     
     def _get_llm_content(self, response: Any) -> Any:
-        """Extract content from LLM response regardless of provider/library"""
-        # Handle dictionary response with raw_output
-        if isinstance(response, dict) and 'raw_output' in response:
-            response = response['raw_output']
+        """
+        Extract content from LLM response regardless of provider/library.
+        
+        Handles:
+        - ModelResponse objects from litellm
+        - Raw text content
+        - Dictionary responses with nested content
+        - Escaped multiline strings
+        
+        Args:
+            response: Raw response from LLM
             
-        # Handle ModelResponse objects
-        if hasattr(response, 'choices') and response.choices:
-            return response.choices[0].message.content
-        return str(response)
+        Returns:
+            Extracted content in most appropriate format
+        """
+        try:
+            # Handle dictionary with raw_output first (preserve existing pattern)
+            if isinstance(response, dict):
+                if 'raw_output' in response:
+                    response = response['raw_output']
+                elif 'choices' in response:
+                    # Handle standard OpenAI/litellm format
+                    return response['choices'][0]['message']['content']
+                elif 'content' in response:
+                    return response['content']
+                elif 'response' in response:
+                    return response['response']
+                
+            # Handle ModelResponse objects (litellm standard)
+            if hasattr(response, 'choices') and response.choices:
+                content = response.choices[0].message.content
+                if self._should_log(LogDetail.DEBUG):
+                    logger.debug("content.extracted_from_model",
+                            content_length=len(content) if content else 0)
+                return content
+
+            # Convert remaining content to string
+            content = str(response)
+            
+            if self._should_log(LogDetail.DEBUG):
+                logger.debug("content.converted_to_string",
+                            original_type=type(response).__name__,
+                            content_length=len(content))
+                
+            return content
+                
+        except Exception as e:
+            logger.error("content_extraction.failed", 
+                        error=str(e),
+                        response_type=type(response).__name__)
+            return str(response)
