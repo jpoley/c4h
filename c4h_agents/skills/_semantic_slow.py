@@ -3,7 +3,7 @@ Slow extraction mode with lazy LLM calls.
 Path: c4h_agents/skills/_semantic_slow.py
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional 
 import structlog
 from agents.base import BaseAgent, AgentResponse
 from skills.shared.types import ExtractConfig
@@ -11,6 +11,14 @@ import json
 from config import locate_config
 
 logger = structlog.get_logger()
+
+class ExtractionError(Exception):
+    """Custom exception for extraction errors"""
+    pass
+
+class ExtractionComplete(StopIteration):
+    """Custom exception to signal clean completion of extraction"""
+    pass
 
 class SlowItemIterator:
     """Iterator for slow extraction results with lazy LLM calls"""
@@ -28,59 +36,84 @@ class SlowItemIterator:
     def __iter__(self):
         return self
 
-    def __next__(self):
+    def __next__(self) -> Any:
         """Get next item using lazy extraction"""
         if self._exhausted or self._position >= self._max_attempts:
+            logger.debug("slow_iterator.completed", 
+                        position=self._position,
+                        exhausted=self._exhausted)
             raise StopIteration
 
         try:
-            # Run extraction synchronously
+            # Run extraction using the extractor instance
             result = self._extractor.process({
                 'content': self._content,
                 'config': self._config,
                 'position': self._position
             })
 
-            # Handle extraction result
-            if result.success:
-                # Get content from standard response location 
-                content = result.data.get('response', '')
-                
-                # Handle NO_MORE_ITEMS as clean completion
-                if isinstance(content, str) and 'NO_MORE_ITEMS' in content:
-                    logger.debug("slow_extraction.complete", position=self._position)
-                    self._exhausted = True
-                    raise StopIteration
-
-                # Parse response if needed
-                try:
-                    if isinstance(content, str):
-                        # Handle potential markdown code blocks
-                        if content.startswith('```') and content.endswith('```'):
-                            content = content.split('```')[1]
-                            if content.startswith('json'):
-                                content = content[4:]
-                        content = json.loads(content)
-                except json.JSONDecodeError:
-                    pass  # Keep original string if not JSON
-                        
-                self._position += 1
-                return content
-
-            else:
-                logger.warning("slow_extraction.failed", 
-                            error=result.error,
-                            position=self._position)
+            if not result.success:
+                logger.error("slow_iterator.extraction_failed", 
+                           error=result.error,
+                           position=self._position)
                 self._exhausted = True
                 raise StopIteration
 
-        except Exception as e:
-            if not isinstance(e, StopIteration):
-                logger.error("slow_iteration.failed", 
-                            error=str(e), 
-                            position=self._position)
-            raise StopIteration
+            # Let base agent handle content extraction
+            content = self._extractor._get_llm_content(result)
 
+            # Log the complete response chain
+            logger.debug("slow_iterator.response",
+                        position=self._position,
+                        content_type=type(content).__name__,
+                        content=content)
+
+            # Handle completion signals
+            if not content:
+                logger.debug("slow_iterator.empty_response")
+                self._exhausted = True
+                raise StopIteration
+
+            if isinstance(content, str):
+                content = content.strip()
+                if content.upper() == "NO_MORE_ITEMS":
+                    logger.debug("slow_iterator.no_more_items", 
+                               position=self._position)
+                    self._exhausted = True
+                    raise StopIteration
+
+                # Try to parse JSON if it's a string
+                try:
+                    content = json.loads(content)
+                except json.JSONDecodeError:
+                    pass  # Keep as string if not valid JSON
+
+            # Track item and increment position
+            if str(content) in self._returned_items:
+                logger.debug("slow_iterator.duplicate_item",
+                           position=self._position,
+                           content=content)
+                self._exhausted = True
+                raise StopIteration
+
+            self._returned_items.add(str(content))
+            self._position += 1
+
+            logger.info("slow_iterator.item_extracted",
+                       position=self._position - 1,
+                       item_type=type(content).__name__)
+
+            return content
+
+        except ExtractionComplete:
+            self._exhausted = True
+            raise StopIteration
+        except Exception as e:
+            logger.error("slow_iterator.error", 
+                        error=str(e),
+                        position=self._position)
+            self._exhausted = True
+            raise StopIteration
 
 class SlowExtractor(BaseAgent):
     """Implements slow extraction mode using iterative LLM queries"""
@@ -111,20 +144,26 @@ class SlowExtractor(BaseAgent):
             logger.error("slow_extractor.missing_config")
             raise ValueError("Extract config required")
 
-        extract_template = self._get_prompt('extract')
         position = context.get('position', 0)
         ordinal = self._get_ordinal(position + 1)
         
-        # First substitute ordinal in the instruction
+        # Format instruction with ordinal
         instruction = context['config'].instruction.format(ordinal=ordinal)
-        
-        # Then use the processed instruction in the main template
-        return extract_template.format(
+
+        # Format complete request using template
+        request = self._get_prompt('extract').format(
             ordinal=ordinal,
             content=context.get('content', ''),
             instruction=instruction,
             format=context['config'].format
         )
+
+        logger.debug("slow_extractor.request",
+                   position=position,
+                   ordinal=ordinal,
+                   request_length=len(request))
+
+        return request
 
     @staticmethod
     def _get_ordinal(n: int) -> str:
