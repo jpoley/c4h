@@ -151,6 +151,7 @@ class BaseAgent:
                    },
                    **log_context)
 
+
     def _get_completion_with_continuation(
         self, 
         messages: List[Dict[str, str]],
@@ -162,6 +163,8 @@ class BaseAgent:
         try:
             attempt = 0
             max_tries = max_attempts or self.max_continuation_attempts
+            accumulated_content = ""
+            final_response = None
 
             while attempt < max_tries:
                 # Log the attempt details
@@ -186,6 +189,10 @@ class BaseAgent:
 
                 # Process response through standard interface
                 result = self._process_llm_response(response, response)
+                final_response = response  # Keep track of last response
+                
+                # Accumulate content
+                accumulated_content += result['response']
                 
                 # Check completion status
                 finish_reason = getattr(response.choices[0], 'finish_reason', None)
@@ -210,7 +217,11 @@ class BaseAgent:
                 # Update metrics
                 self.metrics["continuation_attempts"] = attempt + 1
 
-            return result['response'], response
+            # Modify final response to contain complete content
+            if final_response and final_response.choices:
+                final_response.choices[0].message.content = accumulated_content
+
+            return accumulated_content, final_response
 
         except Exception as e:
             logger.error("llm.continuation_failed", error=str(e))
