@@ -160,21 +160,15 @@ class BaseAgent:
         Get completion with automatic continuation handling - synchronous version.
         """
         try:
-            combined_content = []
             attempt = 0
             max_tries = max_attempts or self.max_continuation_attempts
-            
-            original_message_count = len(messages)
-            last_continuation_length = 0
-            
+
             while attempt < max_tries:
                 # Log the attempt details
                 if attempt > 0:
                     logger.info("llm.continuation_attempt",
                             attempt=attempt,
-                            messages_count=len(messages),
-                            combined_length=len(''.join(combined_content)),
-                            last_chunk_length=last_continuation_length)
+                            messages_count=len(messages))
                 
                 # Synchronous completion
                 response = completion(
@@ -184,30 +178,24 @@ class BaseAgent:
                     api_base=self._get_provider_config(self.provider).get("api_base")
                 )
 
-                # Rest of the logic remains the same
                 if not response or not response.choices:
                     logger.error("llm.no_response",
                             attempt=attempt,
                             provider=self.provider.serialize())
                     break
-                    
-                choice = response.choices[0]
-                content = choice.message.content
-                
-                # Update metrics
-                self.metrics["continuation_attempts"] = attempt + 1
+
+                # Process response through standard interface
+                result = self._process_llm_response(response, response)
                 
                 # Check completion status
-                finish_reason = getattr(choice, 'finish_reason', None)
-                
+                finish_reason = getattr(response.choices[0], 'finish_reason', None)
+                    
                 if finish_reason == 'length':
                     logger.info("llm.length_limit_reached", 
-                              attempt=attempt,
-                              content_length=last_continuation_length,
-                              total_length=len(''.join(combined_content)))
+                            attempt=attempt)
                     
                     # Add continuation prompt
-                    messages.append({"role": "assistant", "content": content})
+                    messages.append({"role": "assistant", "content": result['response']})
                     messages.append({
                         "role": "user", 
                         "content": "Continue exactly from where you left off, maintaining exact format and indentation. Do not repeat any content."
@@ -215,64 +203,18 @@ class BaseAgent:
                     attempt += 1
                 else:
                     logger.info("llm.completion_finished",
-                              finish_reason=finish_reason,
-                              final_length=len(''.join(combined_content)),
-                              continuation_count=attempt)
+                            finish_reason=finish_reason,
+                            continuation_count=attempt)
                     break
-                    
-            final_content = ''.join(combined_content)
-            
-            if attempt >= max_tries:
-                logger.warning("llm.continuation_limit_reached",
-                             max_attempts=max_tries,
-                             final_length=len(final_content))
-            
-            # Log completion summary
-            logger.debug("llm.completion_summary",
-                        total_attempts=attempt + 1,
-                        original_messages=original_message_count,
-                        final_messages=len(messages),
-                        final_length=len(final_content))
-                
-            return final_content, response
-            
+
+                # Update metrics
+                self.metrics["continuation_attempts"] = attempt + 1
+
+            return result['response'], response
+
         except Exception as e:
             logger.error("llm.continuation_failed", error=str(e))
             raise
-
-    def _get_llm_content(self, response: Any) -> Any:
-        """
-        Extract content from LLM response regardless of provider/library.
-        Handles raw strings, ModelResponse objects, and dictionaries.
-        
-        Args:
-            response: Raw response from LLM
-            
-        Returns:
-            Extracted content in the most appropriate format
-        """
-        try:
-            # Handle ModelResponse objects
-            if hasattr(response, 'choices') and response.choices:
-                content = response.choices[0].message.content
-            # Handle dictionary responses
-            elif isinstance(response, dict):
-                content = response.get('content', response.get('text', response))
-            else:
-                content = str(response)
-                
-            # Try to parse JSON if it's a string
-            if isinstance(content, str):
-                try:
-                    return json.loads(content)
-                except json.JSONDecodeError:
-                    return content
-                    
-            return content
-            
-        except Exception as e:
-            logger.error("llm.content_extraction_failed", error=str(e))
-            return str(response)
 
     def _process_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
         """
@@ -619,34 +561,11 @@ class BaseAgent:
     
     def _get_llm_content(self, response: Any) -> Any:
         """
-        Extract content from LLM response regardless of provider/library.
-        
-        Handles:
-        - ModelResponse objects from litellm
-        - Raw text content
-        - Dictionary responses with nested content
-        - Escaped multiline strings
-        
-        Args:
-            response: Raw response from LLM
-            
-        Returns:
-            Extracted content in most appropriate format
+        Single point of LLM response interpretation.
+        Ensures consistent interface for all agents/skills.
         """
         try:
-            # Handle dictionary with raw_output first (preserve existing pattern)
-            if isinstance(response, dict):
-                if 'raw_output' in response:
-                    response = response['raw_output']
-                elif 'choices' in response:
-                    # Handle standard OpenAI/litellm format
-                    return response['choices'][0]['message']['content']
-                elif 'content' in response:
-                    return response['content']
-                elif 'response' in response:
-                    return response['response']
-                
-            # Handle ModelResponse objects (litellm standard)
+            # Handle ModelResponse objects
             if hasattr(response, 'choices') and response.choices:
                 content = response.choices[0].message.content
                 if self._should_log(LogDetail.DEBUG):
@@ -654,18 +573,49 @@ class BaseAgent:
                             content_length=len(content) if content else 0)
                 return content
 
-            # Convert remaining content to string
-            content = str(response)
-            
-            if self._should_log(LogDetail.DEBUG):
-                logger.debug("content.converted_to_string",
-                            original_type=type(response).__name__,
-                            content_length=len(content))
-                
-            return content
+            # Already extracted content or other formats
+            return str(response)
                 
         except Exception as e:
-            logger.error("content_extraction.failed", 
-                        error=str(e),
-                        response_type=type(response).__name__)
+            logger.error("content_extraction.failed", error=str(e))
             return str(response)
+        
+    def _process_llm_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
+        """
+        Process LLM response with standard interface.
+        Maintains consistent response format while preserving metadata.
+        """
+        try:
+            # Extract content using standard method
+            processed_content = self._get_llm_content(content)
+            
+            # Build standard response structure
+            response = {
+                "response": processed_content,
+                "raw_output": str(raw_response),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+            # Log and include token usage if available
+            if hasattr(raw_response, 'usage'):
+                usage = raw_response.usage
+                usage_data = {
+                    "completion_tokens": getattr(usage, 'completion_tokens', 0),
+                    "prompt_tokens": getattr(usage, 'prompt_tokens', 0),
+                    "total_tokens": getattr(usage, 'total_tokens', 0)
+                }
+                logger.info("llm.token_usage", **usage_data)
+                response["usage"] = usage_data
+
+            return response
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error("response_processing.failed", 
+                        error=error_msg)
+            return {
+                "response": str(content),
+                "raw_output": str(raw_response),
+                "timestamp": datetime.utcnow().isoformat(),
+                "error": error_msg
+            }

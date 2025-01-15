@@ -20,6 +20,11 @@ class ExtractionComplete(StopIteration):
     """Custom exception to signal clean completion of extraction"""
     pass
 
+"""
+Slow extraction mode with lazy LLM calls.
+Path: c4h_agents/skills/_semantic_slow.py
+"""
+
 class SlowItemIterator:
     """Iterator for slow extraction results with lazy LLM calls"""
     
@@ -30,22 +35,27 @@ class SlowItemIterator:
         self._config = config
         self._position = 0
         self._exhausted = False
-        self._max_attempts = 7  # Safety limit
+        self._max_attempts = 10 # Safety limit
         self._returned_items = set()  # Track returned items
+        self._current_attempt = 0  # Track retries for current position
 
     def __iter__(self):
         return self
 
     def __next__(self) -> Any:
         """Get next item using lazy extraction"""
-        print("!!! SLOW ITERATOR __NEXT__ CALLED !!!")  
-        logger.critical("SLOW_ITERATOR_NEXT_CALLED", 
+        logger.debug("slow_iterator.next_called", 
                     position=self._position,
-                    max_attempts=self._max_attempts,
-                    exhausted=self._exhausted)
+                    attempt=self._current_attempt,
+                    max_attempts=self._max_attempts)
 
-        if self._exhausted or self._position >= self._max_attempts:
-            print("!!! SLOW ITERATOR EXHAUSTED - STOPPING !!!")
+        if self._exhausted:
+            logger.debug("slow_iterator.exhausted")
+            raise StopIteration
+
+        if self._position >= self._max_attempts:
+            logger.warning("slow_iterator.max_attempts_reached",
+                         max_attempts=self._max_attempts)
             raise StopIteration
 
         try:
@@ -63,49 +73,61 @@ class SlowItemIterator:
                 self._exhausted = True
                 raise StopIteration
 
-            # Extract just the actual response content 
-            content = agent_response.data.get('response')  
+            # Get response content from standard location
+            content = agent_response.data.get('response')
 
-            # Log the complete response chain
             logger.debug("slow_iterator.response",
                         position=self._position,
                         content_type=type(content).__name__,
-                        content=content)
+                        content_preview=str(content)[:100] if content else None)
 
-            # Handle completion signals
-            if not content:
-                logger.debug("slow_iterator.empty_response")
-                self._exhausted = True
-                raise StopIteration
-
-            if isinstance(content, str):
-                content = content.strip()
-                if content.upper() == "NO_MORE_ITEMS":
-                    logger.debug("slow_iterator.no_more_items", 
-                            position=self._position)
+            # Handle various empty/none cases
+            if content is None or (isinstance(content, str) and not content.strip()):
+                self._current_attempt += 1
+                if self._current_attempt >= 3:  # Max retries per position
+                    logger.error("slow_iterator.max_retries_for_position",
+                               position=self._position)
                     self._exhausted = True
                     raise StopIteration
+                logger.warning("slow_iterator.empty_response_retry",
+                             position=self._position,
+                             attempt=self._current_attempt)
+                return next(self)  # Retry this position
 
-                # Try to parse JSON if it's a string
-                try:
-                    content = json.loads(content)
-                except json.JSONDecodeError:
-                    pass  # Keep as string if not valid JSON
-
-            # Track item and increment position
-            if str(content) in self._returned_items:
-                logger.debug("slow_iterator.duplicate_item",
-                        position=self._position,
-                        content=content)
+            # Handle completion signal
+            if isinstance(content, str) and content.strip().upper() == "NO_MORE_ITEMS":
+                logger.info("slow_iterator.no_more_items", 
+                        position=self._position)
                 self._exhausted = True
                 raise StopIteration
 
-            self._returned_items.add(str(content))
+            # Try JSON parsing if string
+            if isinstance(content, str):
+                try:
+                    parsed = json.loads(content)
+                    content = parsed
+                    logger.debug("slow_iterator.parsed_json",
+                               position=self._position)
+                except json.JSONDecodeError:
+                    pass  # Keep as string if not JSON
+
+            # Check for duplicates
+            content_key = str(content)
+            if content_key in self._returned_items:
+                logger.warning("slow_iterator.duplicate_item",
+                             position=self._position,
+                             content_preview=str(content)[:100])
+                self._exhausted = True
+                raise StopIteration
+
+            # Success - update state
+            self._returned_items.add(content_key)
             self._position += 1
+            self._current_attempt = 0  # Reset attempt counter for next position
 
             logger.info("slow_iterator.item_extracted",
-                    position=self._position - 1,
-                    item_type=type(content).__name__)
+                       position=self._position - 1,
+                       item_type=type(content).__name__)
 
             return content
 
@@ -115,6 +137,7 @@ class SlowItemIterator:
                         position=self._position)
             self._exhausted = True
             raise StopIteration
+
 
 class SlowExtractor(BaseAgent):
     """Implements slow extraction mode using iterative LLM queries"""
