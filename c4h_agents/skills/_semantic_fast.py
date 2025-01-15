@@ -1,14 +1,14 @@
 """
-Fast extraction mode implementation.
-Path: src/skills/_semantic_fast.py
+Fast extraction mode implementation using standardized LLM response handling.
+Path: c4h_agents/skills/_semantic_fast.py
 """
 
-from typing import Dict, Any, Optional, List
+from typing import List, Dict, Any, Optional, Iterator, Union
 import structlog
 from dataclasses import dataclass
-from agents.base import BaseAgent, LLMProvider, AgentResponse
-from skills.shared.types import ExtractConfig
 import json
+from agents.base import BaseAgent, AgentResponse
+from skills.shared.types import ExtractConfig
 from config import locate_config
 
 logger = structlog.get_logger()
@@ -39,6 +39,7 @@ class FastItemIterator:
         return self._items[idx]
 
     def has_items(self) -> bool:
+        """Check if iterator has any items"""
         return bool(self._items)
 
 class FastExtractor(BaseAgent):
@@ -49,10 +50,10 @@ class FastExtractor(BaseAgent):
         super().__init__(config=config)
         
         # Get our config section
-        slow_cfg = locate_config(self.config or {}, self._get_agent_name())
+        fast_cfg = locate_config(self.config or {}, self._get_agent_name())
         
-        logger.info("slow_extractor.initialized",
-                settings=slow_cfg)
+        logger.info("fast_extractor.initialized",
+                   settings=fast_cfg)
 
     def _get_agent_name(self) -> str:
         return "semantic_fast_extractor"
@@ -86,18 +87,18 @@ class FastExtractor(BaseAgent):
                 logger.warning("fast_extraction.failed", error=result.error)
                 return FastItemIterator([])
 
-            # Get response content from standard location
-            content = result.data.get('response')
-            if content is None:
+            # Get response content using standardized helper
+            extracted_content = self._get_llm_content(result.data.get('response'))
+            if extracted_content is None:
                 logger.error("fast_extraction.no_content")
                 return FastItemIterator([])
                 
             try:
                 # Parse JSON if needed
-                if isinstance(content, str):
-                    items = json.loads(content)
+                if isinstance(extracted_content, str):
+                    items = json.loads(extracted_content)
                 else:
-                    items = content
+                    items = extracted_content
                     
                 # Normalize to list
                 if isinstance(items, dict):

@@ -5,7 +5,7 @@ llm_config:
     semantic_iterator:
       temperature: 0
       extractor_config:
-        mode: "slow"
+        mode: "fast"
         allow_fallback: true
 
 input_data: |
@@ -25,11 +25,5 @@ instruction: |
     - colors: Array of actual colors (e.g. red, blue, yellow)
     - features: Array of traits and behaviors
     - location: Where it's found (if mentioned)
-
-  For example, in:
-  "The red robin flies fast. A blue jay calls loudly."
-  Position 1 = red robin
-  Position 2 = blue jay
-  Position 3 = NO_MORE_ITEMS (exceeds total birds)
 
   Format: Either a single JSON object for the bird, or exactly "NO_MORE_ITEMS"
