@@ -1,2 +1,3 @@
-~/src/apps/c4h master
-(venv) venv ❯  python c4h_services/examples/prefect_runner.py agent --agent semantic_iterator --config c4h_agents/examples/configs/iter_config_01.yml --log debug
+python c4h_services/examples/prefect_runner.py agent --agent semantic_iterator --config c4h_agents/examples/configs/iter_config_01.yml --log debug
+## python c4h_services/examples/prefect_runner.py workflow --config c4h_services/examples/config/workflow_coder_self_01.yml --log debug
+## python c4h_services/examples/prefect_runner.py workflow --config c4h_services/examples/config/workflow_coder_01.yml
