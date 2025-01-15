@@ -30,7 +30,7 @@ class SlowItemIterator:
         self._config = config
         self._position = 0
         self._exhausted = False
-        self._max_attempts = 100  # Safety limit
+        self._max_attempts = 7  # Safety limit
         self._returned_items = set()  # Track returned items
 
     def __iter__(self):
@@ -38,29 +38,33 @@ class SlowItemIterator:
 
     def __next__(self) -> Any:
         """Get next item using lazy extraction"""
+        print("!!! SLOW ITERATOR __NEXT__ CALLED !!!")  
+        logger.critical("SLOW_ITERATOR_NEXT_CALLED", 
+                    position=self._position,
+                    max_attempts=self._max_attempts,
+                    exhausted=self._exhausted)
+
         if self._exhausted or self._position >= self._max_attempts:
-            logger.debug("slow_iterator.completed", 
-                        position=self._position,
-                        exhausted=self._exhausted)
+            print("!!! SLOW ITERATOR EXHAUSTED - STOPPING !!!")
             raise StopIteration
 
         try:
             # Run extraction using the extractor instance
-            result = self._extractor.process({
+            agent_response = self._extractor.process({
                 'content': self._content,
                 'config': self._config,
                 'position': self._position
             })
 
-            if not result.success:
+            if not agent_response.success:
                 logger.error("slow_iterator.extraction_failed", 
-                           error=result.error,
-                           position=self._position)
+                            error=agent_response.error,
+                            position=self._position)
                 self._exhausted = True
                 raise StopIteration
 
-            # Let base agent handle content extraction
-            content = self._extractor._get_llm_content(result)
+            # Extract just the actual response content 
+            content = agent_response.data.get('response')  
 
             # Log the complete response chain
             logger.debug("slow_iterator.response",
@@ -78,7 +82,7 @@ class SlowItemIterator:
                 content = content.strip()
                 if content.upper() == "NO_MORE_ITEMS":
                     logger.debug("slow_iterator.no_more_items", 
-                               position=self._position)
+                            position=self._position)
                     self._exhausted = True
                     raise StopIteration
 
@@ -91,8 +95,8 @@ class SlowItemIterator:
             # Track item and increment position
             if str(content) in self._returned_items:
                 logger.debug("slow_iterator.duplicate_item",
-                           position=self._position,
-                           content=content)
+                        position=self._position,
+                        content=content)
                 self._exhausted = True
                 raise StopIteration
 
@@ -100,14 +104,11 @@ class SlowItemIterator:
             self._position += 1
 
             logger.info("slow_iterator.item_extracted",
-                       position=self._position - 1,
-                       item_type=type(content).__name__)
+                    position=self._position - 1,
+                    item_type=type(content).__name__)
 
             return content
 
-        except ExtractionComplete:
-            self._exhausted = True
-            raise StopIteration
         except Exception as e:
             logger.error("slow_iterator.error", 
                         error=str(e),
