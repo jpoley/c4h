@@ -18,8 +18,6 @@ class SolutionDesigner(BaseAgent):
     def __init__(self, config: Dict[str, Any] = None):
         """Initialize designer with configuration."""
         super().__init__(config=config)
-        
-        # Let base agent initialize core config
         logger.info("solution_designer.initialized")
 
     def _get_agent_name(self) -> str:
@@ -47,7 +45,7 @@ class SolutionDesigner(BaseAgent):
             discovery_data = input_data.get('discovery_data', {})
             raw_output = discovery_data.get('raw_output', '')
 
-            # Log the components we're formatting
+            # Log request components at debug level
             if self._should_log(LogDetail.DEBUG):
                 logger.debug("solution_designer.format_request",
                             has_discovery=bool(raw_output),
@@ -55,7 +53,7 @@ class SolutionDesigner(BaseAgent):
                             discovery_length=len(raw_output),
                             iteration=context.get('iteration', 0))
                     
-                # Log first 100 chars of each component
+                # Log content previews
                 logger.debug("solution_designer.request_preview",
                             intent_preview=intent_desc[:100] + "..." if len(intent_desc) > 100 else intent_desc,
                             discovery_preview=raw_output[:100] + "..." if len(raw_output) > 100 else raw_output)
@@ -134,6 +132,8 @@ class SolutionDesigner(BaseAgent):
     def process(self, context: Dict[str, Any]) -> AgentResponse:
         """Process solution design request"""
         try:
+            logger.info("agent.processing", context_keys=list(context.keys()))
+            
             # Let BaseAgent handle the LLM interaction
             response = super().process(context)
             
@@ -143,7 +143,7 @@ class SolutionDesigner(BaseAgent):
                             raw_response=response.data.get("raw_output"),
                             response_content=response.data.get("response"))
 
-            # Just pass through the response
+            # Process LLM response using standard pattern
             return response
 
         except Exception as e:
@@ -153,9 +153,23 @@ class SolutionDesigner(BaseAgent):
     def _process_llm_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
         """Process LLM response into standard format"""
         try:
-            # Extract JSON changes from response
+            # Extract content using standard helper
+            content = self._get_llm_content(content)
+            if not content:
+                raise ValueError("No content in LLM response")
+
+            # Parse JSON if string
             if isinstance(content, str):
-                data = json.loads(content)
+                try:
+                    data = json.loads(content)
+                except json.JSONDecodeError as e:
+                    logger.error("solution_designer.json_parse_error", error=str(e))
+                    return {
+                        "error": f"Failed to parse LLM response: {str(e)}",
+                        "raw_output": raw_response,
+                        "raw_content": content,
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
             else:
                 data = content
 
@@ -163,13 +177,14 @@ class SolutionDesigner(BaseAgent):
                 "changes": data.get("changes", []),
                 "raw_output": raw_response,
                 "raw_content": content,
+                "response": content,  # Keep original response for downstream
                 "timestamp": datetime.utcnow().isoformat()
             }
 
-        except json.JSONDecodeError as e:
-            logger.error("solution_designer.json_parse_error", error=str(e))
+        except Exception as e:
+            logger.error("solution_designer.response_processing_failed", error=str(e))
             return {
-                "error": f"Failed to parse LLM response: {str(e)}",
+                "error": str(e),
                 "raw_output": raw_response,
                 "raw_content": content,
                 "timestamp": datetime.utcnow().isoformat()
