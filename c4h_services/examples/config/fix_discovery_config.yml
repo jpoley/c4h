@@ -1,0 +1,65 @@
+# Path: c4h_services/examples/config/fix_discovery_config.yml
+
+project:
+  path: "/Users/jim/src/apps/c4h_ai_dev"  
+  workspace_root: "workspaces"
+
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  
+  agents:
+    discovery:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      tartxt_config:
+        # Explicitly set script_path by combining base path
+        script_path: "c4h_agents/skills/tartxt.py"
+        input_paths: 
+          - "c4h_agents"
+          - "config"
+        exclusions: 
+          - "**/__pycache__/**"
+          - "**/.git/**"
+          - "**/*.pyc"
+        output_type: "stdout"
+        
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      intent:
+        description: |
+          Fix the discovery agent configuration to properly handle tartxt script path resolution.
+
+          Current Issue:
+          The discovery agent is failing with "tartxt_config must include 'script_path'" because of improper path handling between script_base_path and script_path.
+
+          Required Changes:
+          1. Update the discovery agent's configuration handling to:
+             - Properly merge script_base_path and tartxt.py
+             - Ensure script_path is always set correctly
+             - Maintain path compatibility across systems
+
+          2. The change should be made in the discovery agent initialization:
+             - If script_path is provided, use it directly
+             - If script_base_path is provided, combine it with tartxt.py
+             - Ensure paths use forward slashes for consistency
+
+          These changes will ensure the tartxt configuration is properly initialized regardless of how the path is provided.
+
+    coder:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      backup_enabled: true
+
+backup:
+  enabled: true
+  path: "workspaces/backups"
+
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "DEBUG"

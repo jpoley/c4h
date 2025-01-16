@@ -1,0 +1,157 @@
+# Path: c4h_services/examples/config/refactor_base_logging.yml
+
+project:
+  path: "/Users/jim/src/apps/c4h_ai_dev"  
+  workspace_root: "workspaces"
+
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  
+  agents:
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      intent:
+        description: |
+          Enhance the BaseAgent logging implementation to support both system configuration and Prefect runner command-line logging controls (--log debug|normal).
+
+          The logging system should provide two clear levels of visibility:
+          1. INFO Level (normal mode):
+             - Shows execution flow through the system
+             - Captures key decision points
+             - Records important state changes
+             - Indicates success/failure of operations
+             - Excludes content details
+
+          2. DEBUG Level (debug mode):
+             - Shows full execution flow
+             - Displays prompts and responses with length control
+             - Captures detailed state information
+             - Shows content processing stages
+             - Provides metric details
+
+          Required Changes:
+
+          1. BaseAgent Configuration Enhancement
+             ```python
+             class BaseAgent:
+                 def __init__(self, config: Dict[str, Any] = None):
+                     # Get logging configuration with fallbacks
+                     self.log_config = {
+                         "debug_length": config.get("logging", {}).get("debug_length", 500),
+                         "level": LogDetail.from_str(
+                             config.get("logging", {}).get("agent_level", "basic")
+                         )
+                     }
+             ```
+
+          2. Prefect Integration Support
+             Add runtime level override support:
+             ```python
+             def _get_log_level(self) -> LogDetail:
+                 """Get effective log level considering runtime settings."""
+                 # Check for Prefect context first
+                 if hasattr(self, 'prefect_context'):
+                     return LogDetail.from_str(
+                         self.prefect_context.get("log_level", "normal")
+                     )
+                 return self.log_config["level"]
+             ```
+
+          3. Enhanced Debug Content Method
+             ```python
+             def _log_debug_content(self, content: str, context: str, metadata: Optional[Dict] = None) -> None:
+                 """Log content at DEBUG level with configurable truncation."""
+                 if not self._should_log(LogDetail.DEBUG):
+                     return
+                     
+                 max_length = self.log_config["debug_length"]
+                 truncated = content[:max_length] + "..." if len(content) > max_length else content
+                 
+                 log_data = {
+                     "content": truncated,
+                     "full_length": len(content),
+                     **(metadata or {})
+                 }
+                 
+                 logger.debug(f"{self._get_agent_name()}.{context}", **log_data)
+             ```
+
+          4. Flow Logging Enhancement
+             ```python
+             def _log_operation(self, operation: str, metadata: Optional[Dict] = None) -> None:
+                 """Log operation at INFO level with optional metadata."""
+                 log_data = {
+                     "operation": operation,
+                     "agent": self._get_agent_name(),
+                     **(metadata or {})
+                 }
+                 logger.info("agent.operation", **log_data)
+             ```
+
+          5. Update Process Method
+             ```python
+             def process(self, context: Dict[str, Any]) -> AgentResponse:
+                 """Process with enhanced logging."""
+                 try:
+                     self._log_operation("process.start", {
+                         "context_keys": list(context.keys())
+                     })
+                     
+                     # Format request
+                     request = self._format_request(context)
+                     self._log_debug_content(request, "process.request")
+                     
+                     # Get LLM response
+                     result = self._get_completion_with_continuation(...)
+                     self._log_debug_content(str(result), "process.response")
+                     
+                     self._log_operation("process.complete", {
+                         "success": True
+                     })
+                     
+                     return result
+                 except Exception as e:
+                     self._log_operation("process.failed", {
+                         "error": str(e)
+                     })
+                     raise
+             ```
+
+          6. Configuration Updates
+             Add to system_config.yml:
+             ```yaml
+             llm_config:
+               agents:
+                 base:
+                   logging:
+                     debug_length: 500  # Max characters for debug content
+                     agent_level: "basic"  # Default level
+             ```
+
+          Implementation Requirements:
+          1. Honor both system config and runtime flags
+          2. Maintain clean separation between INFO and DEBUG levels
+          3. Support configurable content truncation
+          4. Preserve all existing functionality
+          5. Ensure Prefect runner --log flag works correctly
+          6. Keep logging changes isolated from business logic
+
+          The changes should integrate seamlessly with the Prefect runner's logging controls while providing consistent and configurable logging across all agents.
+
+    coder:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      backup_enabled: true
+
+backup:
+  enabled: true
+  path: "workspaces/backups"
+
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "DEBUG"
