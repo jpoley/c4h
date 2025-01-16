@@ -1,0 +1,90 @@
+# Path: c4h_services/examples/config/fix_base_metrics.yml
+
+project:
+  path: "/Users/jim/src/apps/c4h_ai_dev"  
+  workspace_root: "workspaces"
+
+providers:
+  anthropic:
+    api_base: "https://api.anthropic.com"
+    default_model: "claude-3-opus-20240229"
+
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  
+  agents:
+    discovery:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      tartxt_config:
+        script_path: "c4h_agents/skills/tartxt.py"
+        input_paths: 
+          - "c4h_agents/agents"
+        exclusions: "**/__pycache__/**,**/.git/**,**/*.pyc"
+        output_type: "stdout"
+
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      intent:
+        description: |
+          Fix a critical syntax error in the BaseAgent metrics handling and improve the implementation.
+
+          Current Issue:
+          In c4h_agents/agents/base.py, there is a syntax error in the metrics handling:
+          ```python
+          """Update agent metrics"""self.metrics["total_requests"] += 1
+          ```
+
+          Required Changes:
+          1. Fix the syntax error by properly separating the docstring and code
+          2. Implement proper metrics handling according to Agent Design Principles
+          3. Ensure consistent logging of metrics updates
+          4. Maintain all existing functionality
+          5. Keep the metrics tracking capabilities
+
+          Implementation Requirements:
+          1. The metrics update method should:
+             - Update all relevant metrics
+             - Log the updates at appropriate detail level
+             - Handle duration tracking
+             - Support error tracking
+             - Maintain all existing metric fields
+
+          2. Follow Agent Design Principles:
+             - Keep code minimal and focused
+             - Use clear logging
+             - Maintain stateless operation
+             - Support observability
+
+          3. The metrics structure should track:
+             - total_requests
+             - successful_requests
+             - failed_requests
+             - total_duration
+             - continuation_attempts
+             - last_error
+             - start_time
+             - project name (if available)
+
+          4. Use proper logging detail levels for metrics updates
+
+          Return a JSON object with the necessary changes, focusing on fixing the syntax error and improving the metrics implementation while preserving all other functionality.
+
+    coder:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      backup_enabled: true
+
+backup:
+  enabled: true
+  path: "workspaces/backups"
+
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "DEBUG"
