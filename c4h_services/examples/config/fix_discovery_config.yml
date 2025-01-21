@@ -47,6 +47,8 @@ llm_config:
              - If script_base_path is provided, combine it with tartxt.py
              - Ensure paths use forward slashes for consistency
 
+          3. Provide a discovery_agent_test.yml to validate the changes to the examples/config directory.
+
           These changes will ensure the tartxt configuration is properly initialized regardless of how the path is provided.
 
     coder:
