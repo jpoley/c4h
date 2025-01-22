@@ -1,0 +1,83 @@
+# Path: c4h_services/examples/config/fix_logdetail_regression.yml
+
+project:
+  path: "/Users/jim/src/apps/c4h_ai_dev"  
+  workspace_root: "workspaces"
+
+providers:
+  anthropic:
+    api_base: "https://api.anthropic.com"
+    default_model: "claude-3-opus-20240229"
+
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  
+  agents:
+    discovery:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      tartxt_config:
+        script_path: "c4h_agents/skills/tartxt.py"
+        input_paths: 
+          - "c4h_agents/agents"
+        exclusions: "**/__pycache__/**,**/.git/**,**/*.pyc"
+        output_type: "stdout"
+
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      intent:
+        description: |
+          Fix LogDetail regression in BaseAgent while maintaining backwards compatibility.
+
+          Current Issue:
+          When removing _process_llm_response from BaseAgent, we broke LogDetail functionality
+          used by solution_designer and potentially other agents.
+
+          Required Changes:
+          1. In base.py:
+             - Keep LogDetail enum with all levels
+             - Ensure LogDetail is properly exported
+             - Move any remaining functionality from _process_llm_response to _process_response
+             - Maintain all existing functionality and interfaces
+
+          2. In solution_designer.py:
+             - Update imports to use LogDetail from base
+             - Use _process_response instead of _process_llm_response
+             - Keep all existing functionality
+             - Preserve response format and handling
+
+          Constraints:
+          - No loss of existing functionality
+          - Maintain backward compatibility
+          - Keep all logging capabilities
+          - Preserve response formats
+          - All logging levels must still work
+
+          Files to Modify:
+          1. c4h_agents/agents/base.py
+          2. c4h_agents/agents/solution_designer.py
+
+          The changes should:
+          - Fix the LogDetail undefined error
+          - Keep all existing logging functionality
+          - Maintain the same response processing capabilities
+          - Not break any dependent code
+
+    coder:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      backup_enabled: true
+
+backup:
+  enabled: true
+  path: "workspaces/backups"
+
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "DEBUG"

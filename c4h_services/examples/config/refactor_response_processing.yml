@@ -1,0 +1,81 @@
+# Path: c4h_services/examples/config/refactor_response_processing.yml
+
+project:
+  path: "/Users/jim/src/apps/c4h_ai_dev"  
+  workspace_root: "workspaces"
+
+providers:
+  anthropic:
+    api_base: "https://api.anthropic.com"
+    default_model: "claude-3-opus-20240229"
+
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  
+  agents:
+    discovery:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      tartxt_config:
+        script_path: "c4h_agents/skills/tartxt.py"
+        input_paths: 
+          - "c4h_agents/agents"
+        exclusions: "**/__pycache__/**,**/.git/**,**/*.pyc"
+        output_type: "stdout"
+
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      intent:
+        description: |
+          Clean up response processing in BaseAgent to follow Agent Design Principles.
+
+          Current Issue:
+          The BaseAgent has two similar response processing methods:
+          1. _process_response()
+          2. _process_llm_response()
+          
+          The second method is legacy and not used in the main Prefect workflow.
+
+          Required Changes:
+          1. Remove _process_llm_response method from BaseAgent
+          2. Update docstring of _process_response to be definitive
+          3. Update any descendant agents that override _process_llm_response:
+             - SolutionDesigner needs to use _process_response instead
+             - Preserve all existing functionality
+             - Maintain the same response format
+          4. Ensure all response processing follows the pattern:
+             - Extract content using _get_llm_content
+             - Build standard response dict with response, raw_output, timestamp
+             - Include token usage when available
+          
+          Files to Modify:
+          1. c4h_agents/agents/base.py
+          2. c4h_agents/agents/solution_designer.py
+
+          Constraints:
+          - Maintain existing response format
+          - Keep all current functionality
+          - Preserve error handling
+          - Keep logging patterns
+          - Don't break the Prefect workflow
+
+          Return changes in standard JSON format with file_path, type, description, and complete content.
+
+    coder:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      backup_enabled: true
+
+backup:
+  enabled: true
+  path: "workspaces/backups"
+
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "DEBUG"

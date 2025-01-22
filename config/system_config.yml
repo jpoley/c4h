@@ -1,4 +1,4 @@
-# config/system_config.yml
+# Path: config/system_config.yml
 
 providers:
   anthropic:
@@ -139,7 +139,6 @@ llm_config:
           IMPORTANT do NOT give any other information, only the asked for content
           IF you provide any other information, you will break the processing pipeline
 
-
     semantic_extract:
       provider: "anthropic"
       model: "claude-3-opus-20240229"
@@ -177,7 +176,7 @@ llm_config:
 
     semantic_fast_extractor:
       provider: "anthropic"
-      model:  "claude-3-5-sonnet-20241022"
+      model: "claude-3-5-sonnet-20241022"
       temperature: 0
       prompts:
         system: |
@@ -216,7 +215,7 @@ llm_config:
 
     semantic_slow_extractor:
       provider: "anthropic"
-      model:  "claude-3-5-sonnet-20241022"
+      model: "claude-3-5-sonnet-20241022"
       temperature: 0
       prompts:
         system: |
@@ -291,11 +290,27 @@ llm_config:
 
           4. Output Format:
             - Return ONLY the complete, modified file content.
-            - Exclude all diff markers, explanations, or additional text.
+            - Start with the original file docstring.
+            - End with the last line of actual code.
+            - Never include:
+              * File boundary markers (---, ===, etc)
+              * End-of-file comments or markers
+              * Documentation separators
+              * Markdown formatting (```, etc)
+              * Conversation markers or explanations
             - Ensure the output is valid and executable code.
+
+          5. File Content Rules:
+            - Never append duplicate methods
+            - Never add content after last code line
+            - Never include file separator comments
+            - Never add markdown or documentation markers
+            - Preserve exact original whitespace patterns
+            - Maintain original method ordering
 
           REMINDER:
           Your role is strictly to apply the changes defined in the diff. Any deviation from the original code not specified in the diff is an error.
+
         merge: |
           You will receive a git-style unified diff representing code changes.
           Your task is to apply these changes to the provided original code and return the COMPLETE modified file content.
@@ -315,12 +330,21 @@ llm_config:
             - Apply all modifications from the diff.
             - Maintain existing imports, comments, and docstrings.
             - Preserve original functionality.
+            - Keep original whitespace patterns.
+            - Maintain exact method ordering.
 
           CRITICAL OUTPUT INSTRUCTIONS:
-          - Return ONLY the complete modified file content.
-          - Do NOT include any diff markers, explanations, or additional text.
-          - Ensure the returned content is a valid, runnable file.
-          - DO NOT give any conversation text, as the output will be fed into a process. Any additional text will break the pipeline.
+            - Return ONLY the complete modified file content.
+            - Start with original file docstring.
+            - End with last line of actual code.
+            - NO file boundary markers.
+            - NO end-of-file comments.
+            - NO markdown formatting.
+            - NO documentation separators.
+            - NO conversation text or explanations.
+            - Output must be valid Python that could be directly saved to a .py file.
+
+          Any non-code content will break the processing pipeline.
 
     coder:
       provider: "anthropic"
@@ -349,7 +373,7 @@ llm_config:
           5. Apply changes exactly as specified
           6. Handle errors gracefully with backups
           7. Validate code after changes
-        
+    
     assurance:
       provider: "openai"
       model: "gpt-4-0125-preview"
