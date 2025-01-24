@@ -1,0 +1,84 @@
+# Path: c4h_services/examples/config/fix_prefect_flow.yml
+
+project:
+  path: "/Users/jim/src/apps/c4h_ai_dev"  
+  workspace_root: "workspaces"
+
+providers:
+  anthropic:
+    api_base: "https://api.anthropic.com"
+    default_model: "claude-3-opus-20240229"
+
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-5-sonnet-20241022"
+  
+  agents:
+    discovery:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      tartxt_config:
+        script_path: "/Users/jim/src/apps/c4h_ai_dev/c4h_agents/skills/tartxt.py"
+        input_paths: 
+          - "c4h_services"
+        exclusions: 
+          - "**/__pycache__/**"
+          - "**/.git/**"
+          - "**/*.pyc"
+        output_type: "stdout"
+
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-20241022"
+      temperature: 0
+      intent:
+        description: |
+          Fix the Prefect flow context handling in the basic workflow implementation.
+
+          Current Issue:
+          NameError: name 'flow_context' is not defined
+
+          This occurs in basic_workflow because we're trying to use flow_context without properly importing and initializing it from Prefect.
+
+          Required Changes:
+
+          1. Add proper Prefect imports:
+          - Include flow context utilities
+          - Add any other missing Prefect imports
+          - Follow standard import ordering
+
+          2. Fix flow context initialization:
+          - Use proper Prefect context getter
+          - Handle context availability
+          - Add error handling
+          - Preserve workflow functionality
+
+          3. Update workflow run handling:
+          - Get flow context safely
+          - Use for run ID/storage
+          - Maintain existing flow patterns
+          - Keep all current functionality
+
+          Implementation Requirements:
+          1. No changes to workflow logic
+          2. Only fix context handling
+          3. Maintain all logging
+          4. Keep error handling
+          5. Preserve config usage
+
+          File to Modify:
+          c4h_services/src/intent/impl/prefect/workflows.py
+
+          Return changes in standard JSON format with file_path, type, description, and complete content.
+
+    coder:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      backup_enabled: true
+
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "DEBUG"

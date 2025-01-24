@@ -1,0 +1,242 @@
+# Path: c4h_services/examples/config/base_agent_storage.yml
+
+project:
+  path: "/Users/jim/src/apps/c4h_ai_dev"  
+  workspace_root: "workspaces"
+
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  
+  agents:
+    discovery:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      tartxt_config:
+        script_path: "c4h_agents/skills/tartxt.py"  # Explicit full path
+        input_paths: 
+          - "c4h_agents"
+          - "c4h_services" 
+        exclusions: 
+          - "**/__pycache__/**"
+          - "**/.git/**"
+          - "**/*.pyc"  
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      intent:
+        description: |
+          Enhance BaseAgent to support prompt/response storage following Agent Design Principles.
+
+          Current Flow:
+          - BaseAgent handles all LLM interactions
+          - Uses _process() for core logic
+          - Calls _get_completion_with_continuation()
+          - Processes response with _process_response()
+
+          Required Changes:
+
+          1. BaseAgent Configuration Enhancement
+             Add to system_config.yml:
+             ```yaml
+             llm_config:
+               agents:
+                 base:
+                   storage:
+                     enabled: true
+                     root_dir: "workspaces/workflows"
+                     format: "yymmdd_hhmm_{id}_{name}"
+                     prompt_format: "json"
+                     subdirs: ["prompts"]
+                     retention:
+                       max_age_days: 30
+                       max_runs: 10
+             ```
+
+          2. BaseAgent Storage Integration
+             - Add storage handling in _process():
+             ```python
+             def _process(self, context: Dict[str, Any]) -> AgentResponse:
+                 """Process with storage support"""
+                 try:
+                     # Get storage config
+                     storage_config = self._get_storage_config()
+                     
+                     # Format request
+                     request = self._format_request(context)
+                     
+                     # Get LLM response with storage
+                     result = self._get_completion_with_storage(
+                         request, 
+                         storage_config
+                     )
+                     
+                     return result
+                 except Exception as e:
+                     self._log_operation("process.failed", {
+                         "error": str(e)
+                     })
+                     raise
+             ```
+
+          3. Storage Implementation in BaseAgent
+             - Add new methods:
+             ```python
+             def _get_storage_config(self) -> Dict[str, Any]:
+                 """Get storage configuration with defaults"""
+                 base_config = self.config.get("llm_config", {})
+                                          .get("agents", {})
+                                          .get("base", {})
+                                          .get("storage", {})
+                 return {
+                     "enabled": base_config.get("enabled", False),
+                     "root_dir": base_config.get("root_dir", "workspaces/workflows"),
+                     "format": base_config.get("format", "yymmdd_hhmm_{id}_{name}"),
+                     "prompt_format": base_config.get("prompt_format", "json"),
+                     "retention": base_config.get("retention", {
+                         "max_age_days": 30,
+                         "max_runs": 10
+                     })
+                 }
+
+             def _store_interaction(
+                 self,
+                 prompt: str,
+                 response: Any,
+                 metadata: Dict[str, Any],
+                 storage_config: Dict[str, Any]
+             ) -> None:
+                 """Store prompt/response interaction"""
+                 if not storage_config.get("enabled"):
+                     return
+
+                 try:
+                     timestamp = datetime.utcnow().isoformat()
+                     storage_data = {
+                         "timestamp": timestamp,
+                         "agent": self._get_agent_name(),
+                         "prompt": prompt,
+                         "response": self._get_llm_content(response),
+                         "metadata": {
+                             **metadata,
+                             "model": self.model,
+                             "provider": str(self.provider)
+                         }
+                     }
+
+                     # Format storage path
+                     storage_id = metadata.get("workflow_id", "default")
+                     filename = f"{timestamp}_{self._get_agent_name()}.json"
+                     storage_dir = Path(storage_config["root_dir"]) / storage_id / "prompts"
+                     storage_dir.mkdir(parents=True, exist_ok=True)
+                     storage_path = storage_dir / filename
+
+                     # Store interaction
+                     with open(storage_path, "w") as f:
+                         json.dump(storage_data, f, indent=2)
+
+                     self._log_debug_content(
+                         str(storage_data),
+                         "storage.saved",
+                         {"path": str(storage_path)}
+                     )
+
+                 except Exception as e:
+                     # Log but don't fail on storage errors
+                     self._log_operation("storage.failed", {
+                         "error": str(e)
+                     })
+
+             def _get_completion_with_storage(
+                 self,
+                 prompt: str,
+                 storage_config: Dict[str, Any],
+                 **kwargs
+             ) -> AgentResponse:
+                 """Get completion with storage support"""
+                 result = self._get_completion_with_continuation(
+                     messages=[{"role": "user", "content": prompt}],
+                     **kwargs
+                 )
+                 
+                 if storage_config.get("enabled"):
+                     self._store_interaction(
+                         prompt=prompt,
+                         response=result,
+                         metadata=kwargs.get("metadata", {}),
+                         storage_config=storage_config
+                     )
+                 
+                 return self._process_response(result[0], result[1])
+             ```
+
+          4. Storage Cleanup Support
+             ```python
+             def _cleanup_storage(self, config: Dict[str, Any]) -> None:
+                 """Clean up old storage based on retention policy"""
+                 if not config.get("enabled"):
+                     return
+
+                 try:
+                     retention = config.get("retention", {})
+                     max_age = retention.get("max_age_days", 30)
+                     max_runs = retention.get("max_runs", 10)
+                     
+                     storage_dir = Path(config["root_dir"])
+                     if not storage_dir.exists():
+                         return
+                         
+                     # Get list of workflow directories
+                     workflows = sorted(
+                         [d for d in storage_dir.iterdir() if d.is_dir()],
+                         key=lambda x: x.stat().st_mtime,
+                         reverse=True
+                     )
+                     
+                     # Remove old workflows
+                     cutoff = datetime.now() - timedelta(days=max_age)
+                     for workflow in workflows[max_runs:]:
+                         if workflow.stat().st_mtime < cutoff.timestamp():
+                             shutil.rmtree(workflow)
+                             self._log_operation("storage.cleanup", {
+                                 "removed": str(workflow)
+                             })
+                             
+                 except Exception as e:
+                     self._log_operation("storage.cleanup_failed", {
+                         "error": str(e)
+                     })
+             ```
+
+          Implementation Requirements:
+          1. Storage is optional and disabled by default
+          2. No changes to existing agent interfaces
+          3. Storage errors don't impact agent operation
+          4. Clear logging of storage operations
+          5. Support for workflow context
+          6. Thread-safe storage operations
+          7. Efficient cleanup process
+
+          The changes should integrate seamlessly with the BaseAgent while preserving all existing functionality and following the Agent Design Principles:
+          - LLM-First Processing: Storage doesn't affect LLM interaction
+          - Minimal Agent Logic: Only essential storage code
+          - Single Responsibility: Storage is a clear infrastructure concern
+          - Clear Boundaries: Storage isolated in BaseAgent
+          - Logging Over Validation: Focus on observability
+
+          Files to Modify:
+          1. c4h_agents/agents/base.py
+          2. config/system_config.yml
+
+          Return the changes in standard JSON format with file_path, type, description, and complete content.
+
+backup:
+  enabled: true
+  path: "workspaces/backups"
+
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "DEBUG"

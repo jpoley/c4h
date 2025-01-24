@@ -1,0 +1,175 @@
+# Path: c4h_services/examples/config/workflow_event_storage.yml
+
+project:
+  path: "/Users/jim/src/apps/c4h_ai_dev"  
+  workspace_root: "workspaces"
+
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  
+  agents:
+    discovery:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      tartxt_config:
+        script_path: "/Users/jim/src/apps/c4h_ai_dev/c4h_agents/skills/tartxt.py"  # Full absolute path
+        input_paths: 
+          - "c4h_agents"
+          - "c4h_services" 
+        exclusions: 
+          - "**/__pycache__/**"
+          - "**/.git/**"
+          - "**/*.pyc"
+        output_type: "stdout"
+
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-20241022"
+      temperature: 0
+      intent:
+        description: |
+          Enhance the workflow system to support event sourcing style storage and replay capabilities.
+
+          Required Changes:
+
+          1. AgentResponse Enhancement
+          - Must capture complete context for replay without storage awareness:
+          ```python
+          @dataclass
+          class AgentResponse:
+              success: bool
+              data: Dict[str, Any]
+              error: Optional[str] = None
+              input_context: Any = field(default_factory=dict)  # Original input
+              prompt: str = ""                                  # Formatted prompt
+              raw_response: Any = None                         # Complete response
+              timestamp: datetime = field(default_factory=datetime.utcnow)
+          ```
+
+          2. Workflow Storage Integration
+          - Add workflow orchestration storage:
+          ```yaml
+          runtime:
+            workflow:
+              storage:
+                enabled: true
+                root_dir: "workspaces/workflows"
+                format: "yymmdd_hhmm_{workflow_id}"
+                retention:
+                  max_runs: 10
+                  max_days: 30
+          ```
+          
+          3. Event Storage Structure:
+          ```
+          workspaces/
+            workflows/
+              240124_1045_wf123/
+                events/
+                  001_discovery.json
+                  002_solution_designer.json
+                  003_coder.json
+                config/
+                  workflow_config.json      # Config used for this run
+                  agent_configs.json        # Agent configs at time of run
+                metadata.json               # Workflow metadata
+          ```
+
+          4. Event Format:
+          ```json
+          {
+            "sequence": 1,
+            "agent": "discovery",
+            "timestamp": "2024-01-24T10:45:30Z",
+            "input_context": {},
+            "prompt": "formatted prompt",
+            "response": {
+              "success": true,
+              "data": {},
+              "raw_response": "complete response"
+            },
+            "agent_config": {
+              "snapshot of agent config"
+            }
+          }
+          ```
+
+          Implementation Requirements:
+
+          1. AgentResponse Changes:
+          - Add required fields for event replay
+          - Keep backward compatibility
+          - No storage awareness
+          - Continuation handling remains internal
+
+          2. Workflow Orchestration:
+          - Handle event storage 
+          - Maintain sequence
+          - Store configurations
+          - Enable replay capability
+          - Manage retention
+          - Optional storage via config
+
+          3. Event Storage:
+          - Each agent interaction is an event
+          - Store complete context
+          - Include configuration snapshots
+          - Enable point-in-time replay
+
+          4. Storage Management:
+          - Optional feature via config
+          - Clean directory structure
+          - Retention policy enforcement
+          - Error handling
+
+          5. Replay Support:
+          - Start from any event
+          - Use stored configurations
+          - Maintain sequence
+          - Handle partial runs
+
+          CRITICAL CONSTRAINTS:
+          1. Agents must remain unaware of storage
+          2. No changes to agent internals
+          3. Storage is workflow responsibility
+          4. Maintain existing interfaces
+          5. Keep all current functionality
+          6. Follow config principles
+          7. Clear separation of concerns
+
+          Return changes focusing first on AgentResponse enhancement and workflow storage integration.
+
+          Files to Modify:
+          1. c4h_agents/agents/base.py (AgentResponse changes)
+          2. c4h_services/src/intent/impl/prefect/workflows.py (Storage handling)
+          3. config/system_config.yml (Storage configuration)
+
+    coder:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      backup_enabled: true
+
+runtime:
+  workflow:
+    storage:
+      enabled: true
+      root_dir: "workspaces/workflows"
+      format: "yymmdd_hhmm_{workflow_id}"
+      retention:
+        max_runs: 10
+        max_days: 30
+      subdirs:
+        - "events"
+        - "config"
+
+backup:
+  enabled: true
+  path: "workspaces/backups"
+
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "DEBUG"

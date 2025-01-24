@@ -260,7 +260,7 @@ llm_config:
 
     semantic_merge:
       provider: "anthropic"
-      model: "claude-3-opus-20240229"
+      model: "claude-3-5-sonnet-20241022"
       temperature: 0
       merge_config:
         preserve_formatting: true
