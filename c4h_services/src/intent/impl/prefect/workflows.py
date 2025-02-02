@@ -19,14 +19,16 @@ from .factories import (
 
 logger = structlog.get_logger()
 
-def store_event(workflow_dir: Path, stage: str, event_num: str, content: Any) -> None:
-    """Store raw event content without parsing"""
+def store_event(workflow_dir: Path, stage: str, event_num: str, content: Any, context: Dict[str, Any] = None) -> None:
+    """Store raw event content and input context without parsing"""
     try:
         event_file = workflow_dir / 'events' / f'{event_num}_{stage}.txt'
         with open(event_file, 'w', encoding='utf-8') as f:
             f.write(f'Timestamp: {datetime.now(timezone.utc).isoformat()}\n')
             f.write(f'Stage: {stage}\n')
-            f.write('Content:\n')
+            f.write('\nInput Context:\n')
+            f.write(str(context))
+            f.write('\n\nOutput Content:\n')
             f.write(str(content))
     except Exception as e:
         logger.error("workflow.storage.event_failed",
@@ -50,29 +52,33 @@ def get_workflow_storage(config: Dict[str, Any]) -> Optional[Path]:
         return None
         
     try:
-        # Get prefect logger for context
+        # Get flow run ID from Prefect context
         flow_logger = get_run_logger()
-        # Extract ID from flow run context
-        workflow_id = getattr(flow_logger, 'flow_run_id', 'default')
+        workflow_id = flow_logger.flow_run.id if hasattr(flow_logger, 'flow_run') else 'default'
         
         root_dir = Path(storage_config.get('root_dir', 'workspaces/workflows'))
-        format_str = storage_config.get('format', '{timestamp}_{workflow_id}')
         
+        # Generate timestamp first
         timestamp = datetime.now().strftime('%y%m%d_%H%M')
-        workflow_dir = root_dir / format_str.format(
-            workflow_id=workflow_id,
-            timestamp=timestamp
-        )
+        
+        # Create directory name using timestamp and workflow_id
+        dirname = f"{timestamp}_{workflow_id}"
+        workflow_dir = root_dir / dirname
         
         workflow_dir.mkdir(parents=True, exist_ok=True)
         (workflow_dir / 'events').mkdir(exist_ok=True)
         
+        logger.debug("workflow.storage.initialized",
+                    dir=str(workflow_dir),
+                    workflow_id=workflow_id,
+                    timestamp=timestamp)
+                    
         return workflow_dir
         
     except Exception as e:
         logger.error("workflow.storage.init_failed", error=str(e))
         return None
-
+    
 @flow(name="basic_refactoring",
       description="Core workflow for intent-based refactoring",
       retries=1,
@@ -139,8 +145,14 @@ def run_basic_workflow(
         
         # Store raw discovery event
         if workflow_dir:
-            store_event(workflow_dir, "discovery", "01", discovery_result)
-
+            store_event(workflow_dir, "discovery", "01", discovery_result, {
+                "project_path": str(project_dir),
+                "project": {
+                    "path": str(project_dir),
+                    "workspace_root": config.get('project', {}).get('workspace_root')
+                }
+            })
+        
         if not discovery_result["success"]:
             if workflow_dir:
                 store_workflow_state(workflow_dir, f"error: {discovery_result.get('error', 'Unknown error')}")
@@ -174,7 +186,16 @@ def run_basic_workflow(
 
         # Store raw solution event
         if workflow_dir:
-            store_event(workflow_dir, "solution_design", "02", solution_result)
+            store_event(workflow_dir, "solution_design", "02", solution_result, {
+                "input_data": {
+                    "discovery_data": discovery_result["result_data"],
+                    "intent": intent_desc,
+                    "project": {
+                        "path": str(project_dir),
+                        "workspace_root": config.get('project', {}).get('workspace_root')
+                    }
+                }
+            })
 
         if not solution_result["success"]:
             if workflow_dir:
@@ -207,7 +228,13 @@ def run_basic_workflow(
 
         # Store raw coder event
         if workflow_dir:
-            store_event(workflow_dir, "coder", "03", coder_result)
+            store_event(workflow_dir, "coder", "03", coder_result, {
+                "input_data": solution_result["result_data"],
+                "project": {
+                    "path": str(project_dir),
+                    "workspace_root": config.get('project', {}).get('workspace_root')
+                }
+            })
 
         if not coder_result["success"]:
             if workflow_dir:
