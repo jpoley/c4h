@@ -4,6 +4,8 @@ Path: c4h_services/src/intent/impl/prefect/workflows.py
 """
 
 from prefect import flow, get_run_logger
+from prefect.runtime import flow_run
+
 from prefect.states import Completed, Failed
 from typing import Dict, Any, Optional
 import structlog
@@ -52,19 +54,14 @@ def get_workflow_storage(config: Dict[str, Any]) -> Optional[Path]:
         return None
         
     try:
-        # Get flow run ID from Prefect context
-        flow_logger = get_run_logger()
-        workflow_id = flow_logger.flow_run.id if hasattr(flow_logger, 'flow_run') else 'default'
+        # Get the Prefect flow run ID using Prefect 3.x API
+        workflow_id = flow_run.get_id() if flow_run else str(uuid4())
         
         root_dir = Path(storage_config.get('root_dir', 'workspaces/workflows'))
-        
-        # Generate timestamp first
         timestamp = datetime.now().strftime('%y%m%d_%H%M')
-        
-        # Create directory name using timestamp and workflow_id
         dirname = f"{timestamp}_{workflow_id}"
-        workflow_dir = root_dir / dirname
         
+        workflow_dir = root_dir / dirname
         workflow_dir.mkdir(parents=True, exist_ok=True)
         (workflow_dir / 'events').mkdir(exist_ok=True)
         
@@ -78,7 +75,7 @@ def get_workflow_storage(config: Dict[str, Any]) -> Optional[Path]:
     except Exception as e:
         logger.error("workflow.storage.init_failed", error=str(e))
         return None
-    
+
 @flow(name="basic_refactoring",
       description="Core workflow for intent-based refactoring",
       retries=1,
