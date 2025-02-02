@@ -14,10 +14,9 @@ llm_config:
       model: "claude-3-opus-20240229"
       temperature: 0
       tartxt_config:
-        script_path: "/Users/jim/src/apps/c4h_ai_dev/c4h_agents/skills/tartxt.py"  # Full absolute path
+        script_path: "/Users/jim/src/apps/c4h_ai_dev/c4h_agents/skills/tartxt.py"
         input_paths: 
-          - "c4h_agents"
-          - "c4h_services" 
+          - "c4h_services"
         exclusions: 
           - "**/__pycache__/**"
           - "**/.git/**"
@@ -30,13 +29,11 @@ llm_config:
       temperature: 0
       intent:
         description: |
-          Enhance the workflow system to support event sourcing style storage and replay capabilities.
-
-          Required Changes:
+          Enhance the workflow system to support event sourcing style storage and replay capabilities, fixing Prefect flow context handling.
 
           1. AgentResponse Enhancement
-          - Must capture complete context for replay without storage awareness:
-          ```python
+          Add to c4h_agents/agents/base.py:
+
           @dataclass
           class AgentResponse:
               success: bool
@@ -46,11 +43,10 @@ llm_config:
               prompt: str = ""                                  # Formatted prompt
               raw_response: Any = None                         # Complete response
               timestamp: datetime = field(default_factory=datetime.utcnow)
-          ```
 
-          2. Workflow Storage Integration
-          - Add workflow orchestration storage:
-          ```yaml
+          2. Workflow Storage Configuration
+          Add to config/system_config.yml:
+
           runtime:
             workflow:
               storage:
@@ -60,91 +56,103 @@ llm_config:
                 retention:
                   max_runs: 10
                   max_days: 30
-          ```
-          
-          3. Event Storage Structure:
-          ```
-          workspaces/
-            workflows/
-              240124_1045_wf123/
-                events/
-                  001_discovery.json
-                  002_solution_designer.json
-                  003_coder.json
-                config/
-                  workflow_config.json      # Config used for this run
-                  agent_configs.json        # Agent configs at time of run
-                metadata.json               # Workflow metadata
-          ```
 
-          4. Event Format:
-          ```json
-          {
-            "sequence": 1,
-            "agent": "discovery",
-            "timestamp": "2024-01-24T10:45:30Z",
-            "input_context": {},
-            "prompt": "formatted prompt",
-            "response": {
-              "success": true,
-              "data": {},
-              "raw_response": "complete response"
-            },
-            "agent_config": {
-              "snapshot of agent config"
-            }
-          }
-          ```
+          3. Required Imports for c4h_services/src/intent/impl/prefect/workflows.py:
+          
+          import json
+          from pathlib import Path
+          from datetime import datetime, timezone
+          from typing import Dict, Any, Optional
+          from prefect import flow, get_run_logger
+          from prefect.context import get_flow_context, FlowRunContext
+          from prefect.states import Completed, Failed
+          import structlog
+          from c4h_agents.agents.base import AgentResponse
+          from .tasks import run_agent_task
+          from .factories import (
+              create_discovery_task,
+              create_solution_task,
+              create_coder_task
+          )
+
+          4. Event Storage Functions
+          Add to workflows.py:
+
+          def get_workflow_storage(flow_context: FlowRunContext, config: Dict[str, Any]) -> Optional[Path]:
+              storage_config = config.get('runtime', {}).get('workflow', {}).get('storage', {})
+              if not storage_config.get('enabled', False):
+                  return None
+                  
+              root_dir = Path(storage_config.get('root_dir', 'workspaces/workflows'))
+              format_str = storage_config.get('format', 'yymmdd_hhmm_{workflow_id}')
+              
+              timestamp = datetime.now().strftime('%y%m%d_%H%M')
+              workflow_dir = root_dir / format_str.format(
+                  workflow_id=flow_context.flow_run.id,
+                  timestamp=timestamp
+              )
+              
+              workflow_dir.mkdir(parents=True, exist_ok=True)
+              (workflow_dir / 'events').mkdir(exist_ok=True)
+              (workflow_dir / 'config').mkdir(exist_ok=True)
+              
+              return workflow_dir
+
+          def store_workflow_event(
+              storage_dir: Path,
+              sequence: int,
+              agent: str,
+              response: AgentResponse,
+              agent_config: Dict[str, Any]
+          ) -> None:
+              event = {
+                  "sequence": sequence,
+                  "agent": agent,
+                  "timestamp": response.timestamp.isoformat(),
+                  "input_context": response.input_context,
+                  "prompt": response.prompt,
+                  "response": {
+                      "success": response.success,
+                      "data": response.data,
+                      "raw_response": str(response.raw_response)
+                  },
+                  "agent_config": agent_config
+              }
+              
+              event_file = storage_dir / "events" / f"{sequence:03d}_{agent}.json"
+              with open(event_file, 'w') as f:
+                  json.dump(event, f, indent=2)
+
+          5. Integration in Basic Workflow
+          Modify run_basic_workflow:
+
+          @flow(name="basic_refactoring")
+          def run_basic_workflow(
+              project_path: Path,
+              intent_desc: Dict[str, Any],
+              config: Dict[str, Any]
+          ) -> Dict[str, Any]:
+              flow_context = get_flow_context()
+              flow_logger = get_run_logger()
+              
+              try:
+                  storage_dir = get_workflow_storage(flow_context, config)
+                  if storage_dir:
+                      with open(storage_dir / "config" / "workflow_config.json", 'w') as f:
+                          json.dump(config, f, indent=2)
+
+          Make sure that prefect runner is properly configured to handle the new storage capabilities, wiht required imports and context handling.
 
           Implementation Requirements:
+          1. Flow context must be properly initialized
+          2. Storage operations must be optional
+          3. All operations must be thread-safe
+          4. Full error handling required
+          5. Agents must remain unaware of storage
+          6. Maintain sequence ordering
+          7. Keep separation of concerns
 
-          1. AgentResponse Changes:
-          - Add required fields for event replay
-          - Keep backward compatibility
-          - No storage awareness
-          - Continuation handling remains internal
-
-          2. Workflow Orchestration:
-          - Handle event storage 
-          - Maintain sequence
-          - Store configurations
-          - Enable replay capability
-          - Manage retention
-          - Optional storage via config
-
-          3. Event Storage:
-          - Each agent interaction is an event
-          - Store complete context
-          - Include configuration snapshots
-          - Enable point-in-time replay
-
-          4. Storage Management:
-          - Optional feature via config
-          - Clean directory structure
-          - Retention policy enforcement
-          - Error handling
-
-          5. Replay Support:
-          - Start from any event
-          - Use stored configurations
-          - Maintain sequence
-          - Handle partial runs
-
-          CRITICAL CONSTRAINTS:
-          1. Agents must remain unaware of storage
-          2. No changes to agent internals
-          3. Storage is workflow responsibility
-          4. Maintain existing interfaces
-          5. Keep all current functionality
-          6. Follow config principles
-          7. Clear separation of concerns
-
-          Return changes focusing first on AgentResponse enhancement and workflow storage integration.
-
-          Files to Modify:
-          1. c4h_agents/agents/base.py (AgentResponse changes)
-          2. c4h_services/src/intent/impl/prefect/workflows.py (Storage handling)
-          3. config/system_config.yml (Storage configuration)
+          Return changes in standard JSON format with file_path, type, description, and complete content.
 
     coder:
       provider: "anthropic"
@@ -164,10 +172,6 @@ runtime:
       subdirs:
         - "events"
         - "config"
-
-backup:
-  enabled: true
-  path: "workspaces/backups"
 
 logging:
   level: "INFO"

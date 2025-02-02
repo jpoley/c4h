@@ -1,0 +1,151 @@
+# Path: c4h_services/examples/config/workflow_event_storage_v2.yml
+
+project:
+  path: "/Users/jim/src/apps/c4h_ai_dev"  
+  workspace_root: "workspaces"
+
+providers:
+  anthropic:
+    api_base: "https://api.anthropic.com"
+    default_model: "claude-3-opus-20240229"
+
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  
+  agents:
+    discovery:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      tartxt_config:
+        script_path: "/Users/jim/src/apps/c4h_ai_dev/c4h_agents/skills/tartxt.py"
+        input_paths: 
+          - "c4h_services"
+        exclusions: 
+          - "**/__pycache__/**"
+          - "**/.git/**"
+          - "**/*.pyc"
+        output_type: "stdout"
+
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-20241022"
+      temperature: 0
+      intent:
+        description: |
+          Enhance the workflow system to support event sourcing style storage and replay capabilities using current Prefect APIs.
+
+          Key Requirements:
+
+          1. Use Current Prefect API:
+          - Replace get_flow_context with get_run_context from prefect package
+          - Access flow run info via get_run_context().flow_run
+          - Maintain compatibility with latest Prefect version
+
+          2. AgentResponse Enhancement in c4h_agents/agents/base.py:
+          @dataclass
+          class AgentResponse:
+              success: bool
+              data: Dict[str, Any]
+              error: Optional[str] = None
+              input_context: Any = field(default_factory=dict)  
+              prompt: str = ""                                  
+              raw_response: Any = None                         
+              timestamp: datetime = field(default_factory=datetime.utcnow)
+
+          3. Event Storage Structure:
+          - Store each agent execution as a discrete event
+          - Include agent configuration
+          - Capture input context and prompts
+          - Maintain execution sequence
+          - Enable future replay capabilities
+
+          4. Storage Implementation:
+          ```python
+          def get_workflow_storage(config: Dict[str, Any]) -> Optional[Path]:
+              storage_config = config.get('runtime', {}).get('workflow', {}).get('storage', {})
+              if not storage_config.get('enabled', False):
+                  return None
+                  
+              try:
+                  # Get current run context
+                  context = get_run_context()
+                  workflow_id = context.flow_run.id if context and context.flow_run else 'default'
+                  
+                  # Create storage path
+                  root_dir = Path(storage_config.get('root_dir', 'workspaces/workflows'))
+                  format_str = storage_config.get('format', 'yymmdd_hhmm_{workflow_id}')
+                  
+                  timestamp = datetime.now().strftime('%y%m%d_%H%M')
+                  workflow_dir = root_dir / format_str.format(
+                      workflow_id=workflow_id,
+                      timestamp=timestamp
+                  )
+                  
+                  # Create directory structure
+                  workflow_dir.mkdir(parents=True, exist_ok=True)
+                  (workflow_dir / 'events').mkdir(exist_ok=True)
+                  (workflow_dir / 'config').mkdir(exist_ok=True)
+                  
+                  return workflow_dir
+                  
+              except Exception as e:
+                  logger.error("workflow.storage.init_failed", error=str(e))
+                  return None
+          ```
+
+          5. Required Imports:
+          ```python
+          from prefect import flow, get_run_logger, get_run_context
+          from prefect.states import Completed, Failed
+          import json
+          from pathlib import Path
+          from datetime import datetime, timezone
+          from typing import Dict, Any, Optional
+          import structlog
+          ```
+
+          6. Implementation Constraints:
+          - No direct Prefect API imports beyond those listed
+          - Handle missing context gracefully
+          - Make storage operations optional
+          - Preserve all existing functionality
+          - Maintain agent independence
+
+    coder:
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-20241022"
+      temperature: 0
+      backup_enabled: true
+
+runtime:
+  workflow:
+    storage:
+      enabled: true
+      root_dir: "workspaces/workflows"
+      format: "yymmdd_hhmm_{workflow_id}"
+      retention:
+        max_runs: 10
+        max_days: 30
+      subdirs:
+        - "events"
+        - "config"
+      error_handling:
+        ignore_storage_errors: true
+        log_level: "ERROR"
+    retry:
+      enabled: true
+      max_attempts: 3
+      initial_delay: 1
+      max_delay: 30
+      backoff_factor: 2
+      retry_on:
+        - "overloaded_error"
+        - "rate_limit_error"
+        - "timeout_error"
+
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "DEBUG"

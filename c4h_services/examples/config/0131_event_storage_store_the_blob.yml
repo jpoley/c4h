@@ -1,0 +1,122 @@
+# Path: c4h_services/examples/config/workflow_event_storage_v2.yml
+
+project:
+  path: "/Users/jim/src/apps/c4h_ai_dev"  
+  workspace_root: "workspaces"
+
+providers:
+  anthropic:
+    api_base: "https://api.anthropic.com"
+    default_model: "claude-3-opus-20240229"
+
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  
+  agents:
+    discovery:
+      provider: "anthropic"
+      model: "claude-3-opus-20240229"
+      temperature: 0
+      tartxt_config:
+        script_path: "/Users/jim/src/apps/c4h_ai_dev/c4h_agents/skills/tartxt.py"
+        input_paths: 
+          - "c4h_services"
+        exclusions: 
+          - "**/__pycache__/**"
+          - "**/.git/**"
+          - "**/*.pyc"
+        output_type: "stdout"
+
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-20241022"
+      temperature: 0
+      # Intent description
+      intent:
+        description: |
+          Add opaque event storage to the basic workflow following Agent Design Principles.
+          We are fixing a bug where the current storage is failing to serailse json.
+          We need to fix this by adherung to agent desing principles.
+          The storage should be opaque and not inspect or parse agent responses.
+          
+          Implementation Requirements:
+          1. Store raw agent responses as-is without inspection/parsing
+          2. Storage configuration from runtime.workflow.storage:
+            - enabled: true/false controls if storage is active
+            - root_dir: base storage path for all workflow runs
+            - format: 'yymmdd_hhmm_{workflow_id}' for unique directories
+            - retention: follows max_runs and max_days settings
+          
+          3. Directory Structure:
+            /[root_dir]/[formatted_id]/
+              events/
+                01_discovery.txt  # Raw discovery agent response
+                02_solution.txt   # Raw solution designer response
+                03_coder.txt      # Raw coder agent response
+              workflow_state.txt  # Basic workflow status only
+          
+          4. Storage Implementation Rules:
+            - Write complete agent response without parsing
+            - Minimal metadata (timestamp, agent name, stage)
+            - No content validation or inspection
+            - Separate files for each agent response
+            - Handle storage errors per config
+          
+          5. Follow Agent Design Principles:
+            - LLM-First: Store raw responses without interpretation
+            - Minimal Logic: Only handle I/O operations
+            - Clear Boundaries: Independent storage per agent
+            - Stateless: No dependencies between stored events
+            - Observable: Clear file structure and naming
+          
+          Files to Modify:
+          1. c4h_services/src/intent/impl/prefect/workflows.py:
+            - Add get_workflow_storage() helper
+            - Implement storage after each agent task
+            - Handle storage errors per config
+          
+          Constraints:
+          - Never inspect or parse agent responses
+          - Storage failures must not affect workflow
+          - Preserve all existing workflow functionality
+          - Follow directory structure exactly
+          - Use pathlib for path handling
+          - Handle storage errors according to error_handling config
+
+    coder:
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-20241022"
+      temperature: 0
+      backup_enabled: true
+
+runtime:
+  workflow:
+    storage:
+      enabled: true
+      root_dir: "workspaces/workflows"
+      format: "yymmdd_hhmm_{workflow_id}"
+      retention:
+        max_runs: 10
+        max_days: 30
+      subdirs:
+        - "events"
+        - "config"
+      error_handling:
+        ignore_storage_errors: true
+        log_level: "ERROR"
+    retry:
+      enabled: true
+      max_attempts: 3
+      initial_delay: 1
+      max_delay: 30
+      backoff_factor: 2
+      retry_on:
+        - "overloaded_error"
+        - "rate_limit_error"
+        - "timeout_error"
+
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "DEBUG"
