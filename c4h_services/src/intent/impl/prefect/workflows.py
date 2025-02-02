@@ -4,10 +4,14 @@ Path: c4h_services/src/intent/impl/prefect/workflows.py
 """
 
 from prefect import flow, get_run_logger
+from prefect.runtime import flow_run
+
 from prefect.states import Completed, Failed
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import structlog
 from pathlib import Path
+from datetime import datetime, timezone
+from uuid import uuid4
 
 from .tasks import run_agent_task
 from .factories import (
@@ -17,6 +21,61 @@ from .factories import (
 )
 
 logger = structlog.get_logger()
+
+def store_event(workflow_dir: Path, stage: str, event_num: str, content: Any, context: Dict[str, Any] = None) -> None:
+    """Store raw event content and input context without parsing"""
+    try:
+        event_file = workflow_dir / 'events' / f'{event_num}_{stage}.txt'
+        with open(event_file, 'w', encoding='utf-8') as f:
+            f.write(f'Timestamp: {datetime.now(timezone.utc).isoformat()}\n')
+            f.write(f'Stage: {stage}\n')
+            f.write('\nInput Context:\n')
+            f.write(str(context))
+            f.write('\n\nOutput Content:\n')
+            f.write(str(content))
+    except Exception as e:
+        logger.error("workflow.storage.event_failed",
+                    stage=stage,
+                    error=str(e))
+
+def store_workflow_state(workflow_dir: Path, state: str) -> None:
+    """Store minimal workflow state"""
+    try:
+        state_file = workflow_dir / 'workflow_state.txt'
+        with open(state_file, 'w', encoding='utf-8') as f:
+            f.write(f'Timestamp: {datetime.now(timezone.utc).isoformat()}\n')
+            f.write(f'Status: {state}\n')
+    except Exception as e:
+        logger.error("workflow.storage.state_failed", error=str(e))
+
+def get_workflow_storage(config: Dict[str, Any]) -> Optional[Path]:
+    """Initialize workflow storage directory if enabled"""
+    storage_config = config.get('runtime', {}).get('workflow', {}).get('storage', {})
+    if not storage_config.get('enabled', False):
+        return None
+        
+    try:
+        # Get the Prefect flow run ID using Prefect 3.x API
+        workflow_id = flow_run.get_id() if flow_run else str(uuid4())
+        
+        root_dir = Path(storage_config.get('root_dir', 'workspaces/workflows'))
+        timestamp = datetime.now().strftime('%y%m%d_%H%M')
+        dirname = f"{timestamp}_{workflow_id}"
+        
+        workflow_dir = root_dir / dirname
+        workflow_dir.mkdir(parents=True, exist_ok=True)
+        (workflow_dir / 'events').mkdir(exist_ok=True)
+        
+        logger.debug("workflow.storage.initialized",
+                    dir=str(workflow_dir),
+                    workflow_id=workflow_id,
+                    timestamp=timestamp)
+                    
+        return workflow_dir
+        
+    except Exception as e:
+        logger.error("workflow.storage.init_failed", error=str(e))
+        return None
 
 @flow(name="basic_refactoring",
       description="Core workflow for intent-based refactoring",
@@ -36,6 +95,10 @@ def run_basic_workflow(
     flow_logger = get_run_logger()
     flow_logger.info("Starting basic refactoring workflow")
     
+    # Initialize workflow storage
+    workflow_dir = get_workflow_storage(config)
+    if workflow_dir:
+        store_workflow_state(workflow_dir, "started")
     try:
         # Get project path from config if available, otherwise use provided path
         config_project_path = config.get('project', {}).get('path')
@@ -78,12 +141,24 @@ def run_basic_workflow(
             task_name="discovery"
         )
         
+        # Store raw discovery event
+        if workflow_dir:
+            store_event(workflow_dir, "discovery", "01", discovery_result, {
+                "project_path": str(project_dir),
+                "project": {
+                    "path": str(project_dir),
+                    "workspace_root": config.get('project', {}).get('workspace_root')
+                }
+            })
+        
         if not discovery_result["success"]:
+            if workflow_dir:
+                store_workflow_state(workflow_dir, f"error: {discovery_result.get('error', 'Unknown error')}")
             return Failed(
-                message=f"Discovery failed: {discovery_result['error']}",
+                message=f"Discovery failed: {discovery_result.get('error')}",
                 result={
                     "status": "error",
-                    "error": discovery_result["error"],
+                    "error": discovery_result.get('error'),
                     "stage": "discovery"
                 }
             )
@@ -107,12 +182,27 @@ def run_basic_workflow(
             task_name="solution_design"
         )
 
+        # Store raw solution event
+        if workflow_dir:
+            store_event(workflow_dir, "solution_design", "02", solution_result, {
+                "input_data": {
+                    "discovery_data": discovery_result["result_data"],
+                    "intent": intent_desc,
+                    "project": {
+                        "path": str(project_dir),
+                        "workspace_root": config.get('project', {}).get('workspace_root')
+                    }
+                }
+            })
+
         if not solution_result["success"]:
+            if workflow_dir:
+                store_workflow_state(workflow_dir, f"error: {solution_result.get('error', 'Unknown error')}")
             return Failed(
-                message=f"Solution design failed: {solution_result['error']}",
+                message=f"Solution design failed: {solution_result.get('error')}",
                 result={
                     "status": "error",
-                    "error": solution_result["error"],
+                    "error": solution_result.get('error'),
                     "stage": "solution_design",
                     "discovery_data": discovery_result["result_data"]
                 }
@@ -134,12 +224,24 @@ def run_basic_workflow(
             task_name="coder"
         )
 
+        # Store raw coder event
+        if workflow_dir:
+            store_event(workflow_dir, "coder", "03", coder_result, {
+                "input_data": solution_result["result_data"],
+                "project": {
+                    "path": str(project_dir),
+                    "workspace_root": config.get('project', {}).get('workspace_root')
+                }
+            })
+
         if not coder_result["success"]:
+            if workflow_dir:
+                store_workflow_state(workflow_dir, f"error: {coder_result.get('error', 'Unknown error')}")
             return Failed(
-                message=f"Code implementation failed: {coder_result['error']}",
+                message=f"Code implementation failed: {coder_result.get('error')}",
                 result={
                     "status": "error",
-                    "error": coder_result["error"],
+                    "error": coder_result.get('error'),
                     "stage": "coder",
                     "discovery_data": discovery_result["result_data"],
                     "solution_data": solution_result["result_data"]
@@ -147,6 +249,10 @@ def run_basic_workflow(
             )
 
         flow_logger.info("Code implementation completed successfully")
+
+        # Store final workflow state
+        if workflow_dir:
+            store_workflow_state(workflow_dir, "completed")
 
         # Return successful completion state
         return Completed(
@@ -166,6 +272,11 @@ def run_basic_workflow(
     except Exception as e:
         error_msg = str(e)
         logger.error("basic_workflow.failed", error=error_msg)
+        
+        # Store error state
+        if workflow_dir:
+            store_workflow_state(workflow_dir, f"error: {error_msg}")
+
         return Failed(
             message=f"Workflow failed: {error_msg}",
             result={
