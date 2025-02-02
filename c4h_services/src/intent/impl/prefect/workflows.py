@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional
 import structlog
 from pathlib import Path
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from .tasks import run_agent_task
 from .factories import (
