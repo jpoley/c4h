@@ -158,26 +158,11 @@ class SolutionDesigner(BaseAgent):
             if not content:
                 raise ValueError("No content in LLM response")
 
-            # Parse JSON if string
-            if isinstance(content, str):
-                try:
-                    data = json.loads(content)
-                except json.JSONDecodeError as e:
-                    logger.error("solution_designer.json_parse_error", error=str(e))
-                    return {
-                        "error": f"Failed to parse LLM response: {str(e)}",
-                        "raw_output": raw_response,
-                        "raw_content": content,
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-            else:
-                data = content
-
             return {
-                "changes": data.get("changes", []),
+                "changes": content,
                 "raw_output": raw_response,
                 "raw_content": content,
-                "response": content,  # Keep original response for downstream
+                "response": content,
                 "timestamp": datetime.utcnow().isoformat()
             }
 

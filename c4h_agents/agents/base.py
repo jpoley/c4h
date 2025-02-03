@@ -375,7 +375,7 @@ class BaseAgent:
                 provider_config["litellm_params"] = litellm_params
                 
             if self._should_log(LogDetail.DEBUG):
-                logger.debug("provider.config_loaded",
+                logger.debug("provider.config_loaded", 
                             provider=str(provider),
                             retry_config=litellm_params.get("retry"),
                             max_retries=litellm_params.get("max_retries"))
@@ -667,7 +667,6 @@ class BaseAgent:
         Ensures consistent interface for all agents/skills.
         """
         try:
-            # Handle ModelResponse objects
             if hasattr(response, 'choices') and response.choices:
                 content = response.choices[0].message.content
                 if self._should_log(LogDetail.DEBUG):
@@ -675,49 +674,8 @@ class BaseAgent:
                             content_length=len(content) if content else 0)
                 return content
 
-            # Already extracted content or other formats
             return str(response)
                 
         except Exception as e:
             logger.error("content_extraction.failed", error=str(e))
             return str(response)
-        
-    def _process_llm_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
-        """
-        Process LLM response with standard interface.
-        Maintains consistent response format while preserving metadata.
-        """
-        try:
-            # Extract content using standard method
-            processed_content = self._get_llm_content(content)
-            
-            # Build standard response structure
-            response = {
-                "response": processed_content,
-                "raw_output": str(raw_response),
-                "timestamp": datetime.utcnow().isoformat()
-            }
-
-            # Log and include token usage if available
-            if hasattr(raw_response, 'usage'):
-                usage = raw_response.usage
-                usage_data = {
-                    "completion_tokens": getattr(usage, 'completion_tokens', 0),
-                    "prompt_tokens": getattr(usage, 'prompt_tokens', 0),
-                    "total_tokens": getattr(usage, 'total_tokens', 0)
-                }
-                logger.info("llm.token_usage", **usage_data)
-                response["usage"] = usage_data
-
-            return response
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error("response_processing.failed", 
-                        error=error_msg)
-            return {
-                "response": str(content),
-                "raw_output": str(raw_response),
-                "timestamp": datetime.utcnow().isoformat(),
-                "error": error_msg
-            }
