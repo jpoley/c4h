@@ -24,19 +24,21 @@ providers:
       backoff:
         initial_delay: 1
         max_delay: 30
+  
         exponential: true
 
   openai:
     api_base: "https://api.openai.com/v1"
-    context_length: 128000
     env_var: "OPENAI_API_KEY"
     default_model: "gpt-4o-mini"
     valid_models:
       - "gpt-4o"
       - "gpt-4o-mini"
       - "gpt-4"
-      - "o1-preview"
+      - "o1"
       - "o1-mini"
+      - "o3"
+      - "o3-mini"
     litellm_params:
       retry: true
       max_retries: 3
@@ -76,10 +78,9 @@ llm_config:
           2. File relationships
           3. Code dependencies
           4. Available functionality
-
     solution_designer:
-      provider: "anthropic"
-      model: "claude-3-5-sonnet-20241022"
+      provider: "openai"
+      model: "o3-mini"
       temperature: 0
       prompts:
         system: |
