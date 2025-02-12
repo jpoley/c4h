@@ -5,7 +5,7 @@ Path: c4h_services/examples/prefect_runner.py
 
 import sys
 from pathlib import Path
-from typing import Dict, Any, Optional, Literal
+from typing import Dict, Any, Optional, Literal, List
 import structlog
 import argparse
 from prefect import flow
@@ -13,10 +13,12 @@ from rich.console import Console
 import yaml
 from enum import Enum
 
-# Add source directories to path
+# Add source directories to path BEFORE any c4h imports
 root_dir = Path(__file__).parent.parent.parent
 sys.path.append(str(root_dir))
 
+# Now import c4h packages
+from c4h_agents.config import deep_merge
 from c4h_agents.agents.discovery import DiscoveryAgent
 from c4h_agents.agents.solution_designer import SolutionDesigner
 from c4h_agents.agents.coder import Coder
@@ -25,16 +27,8 @@ from c4h_agents.skills.semantic_iterator import SemanticIterator
 from c4h_agents.skills.semantic_merge import SemanticMerge
 from c4h_agents.skills.semantic_extract import SemanticExtract
 from c4h_agents.skills.asset_manager import AssetManager
-from c4h_agents.config import deep_merge
-
-from c4h_services.src.intent.impl.prefect.tasks import AgentTaskConfig, run_agent_task
-from c4h_services.src.intent.impl.prefect.workflows import run_basic_workflow
-from c4h_services.src.intent.impl.prefect.factories import (
-    create_discovery_task,
-    create_solution_task,
-    create_coder_task,
-    create_assurance_task
-)
+from c4h_services.src.intent.impl.prefect.workflows import run_basic_workflow  # Added missing import
+from c4h_services.src.intent.impl.prefect.tasks import run_agent_task, AgentTaskConfig
 
 logger = structlog.get_logger()
 
@@ -51,10 +45,26 @@ class LogMode(str, Enum):
 # Agent registry for individual runs
 AGENT_REGISTRY = {
     # Core Agents
-    "discovery": lambda config: create_discovery_task(config),
-    "solution_designer": lambda config: create_solution_task(config),
-    "coder": lambda config: create_coder_task(config),
-    "assurance": lambda config: create_assurance_task(config),
+    "discovery": lambda config: AgentTaskConfig(
+        agent_class=DiscoveryAgent,
+        config=config,
+        task_name="discovery"
+    ),
+    "solution_designer": lambda config: AgentTaskConfig(
+        agent_class=SolutionDesigner,
+        config=config,
+        task_name="solution_designer"
+    ),
+    "coder": lambda config: AgentTaskConfig(
+        agent_class=Coder,
+        config=config,
+        task_name="coder"
+    ),
+    "assurance": lambda config: AgentTaskConfig(
+        agent_class=AssuranceAgent,
+        config=config,
+        task_name="assurance"
+    ),
     
     # Semantic Skills
     "semantic_iterator": lambda config: AgentTaskConfig(
@@ -83,50 +93,154 @@ AGENT_REGISTRY = {
     )
 }
 
-def load_configs(config_path: str) -> Dict[str, Any]:
-    """Load and merge configurations"""
+def load_configs(app_config_path: str, system_config_paths: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Load and merge configurations in proper order"""
     try:
-        # Find system config
-        sys_paths = [
-            Path("config/system_config.yml"),
-            Path("../config/system_config.yml"),
-            root_dir / "config" / "system_config.yml"
-        ]
-        
-        logger.info("config.paths.search", 
-            cwd=str(Path.cwd()),
-            root_dir=str(root_dir),
-            sys_paths=[str(p) for p in sys_paths],
-            config_path=config_path
-        )
-        
-        sys_config_path = next((p for p in sys_paths if p.exists()), None)
-        if not sys_config_path:
-            raise FileNotFoundError("system_config.yml not found")
+        # Load application config first
+        with open(app_config_path) as f:
+            app_config = yaml.safe_load(f) or {}
             
-        # Load configs
-        with open(sys_config_path) as f:
-            system_config = yaml.safe_load(f)
-            
-        with open(config_path) as f:
-            test_config = yaml.safe_load(f)
-
         logger.info("config.content.loaded",
-            system_config_keys=list(system_config.keys()),
-            test_config_keys=list(test_config.keys()),
-            project_path=test_config.get('project', {}).get('path')
-        )
-
-        return deep_merge(system_config, test_config)
+                   app_config_keys=list(app_config.keys()),
+                   project_path=app_config.get('project', {}).get('path'))
+        
+        # Start with empty base config
+        merged_config = {}
+        
+        # Process system configs in order if provided
+        if system_config_paths:
+            for sys_path in system_config_paths:
+                path = Path(sys_path)
+                if not path.exists():
+                    logger.warning("config.system_config.not_found", path=str(path))
+                    continue
+                    
+                with open(path) as f:
+                    sys_config = yaml.safe_load(f) or {}
+                    logger.debug("config.merge.system_config",
+                               path=str(path),
+                               config_keys=list(sys_config.keys()))
+                    merged_config = deep_merge(merged_config, sys_config)
+                    
+        # If no system configs provided or found, check default locations
+        elif not merged_config:
+            default_paths = [
+                Path("config/system_config.yml"),
+                Path("../config/system_config.yml"),
+                root_dir / "config" / "system_config.yml"
+            ]
+            
+            logger.info("config.paths.search", 
+                cwd=str(Path.cwd()),
+                root_dir=str(root_dir),
+                sys_paths=[str(p) for p in default_paths],
+                config_path=app_config_path
+            )
+            
+            for path in default_paths:
+                if path.exists():
+                    with open(path) as f:
+                        sys_config = yaml.safe_load(f) or {}
+                        logger.debug("config.merge.default_system",
+                                   path=str(path),
+                                   config_keys=list(sys_config.keys()))
+                        merged_config = deep_merge(merged_config, sys_config)
+                    break
+                    
+        # Finally merge application config
+        final_config = deep_merge(merged_config, app_config)
+        
+        # Ensure llm_config exists at root
+        if 'llm_config' not in final_config:
+            logger.warning("config.no_llm_config_found",
+                         final_keys=list(final_config.keys()))
+            final_config['llm_config'] = {}
+            
+        return final_config
 
     except Exception as e:
         logger.error("config.load_failed", error=str(e))
         raise
 
-"""
-Extended Prefect runner supporting both individual agents and full workflow execution.
-Path: c4h_services/examples/prefect_runner.py
-"""
+@flow(name="prefect_runner")
+def run_flow(
+    mode: RunMode,
+    config: Dict[str, Any],
+    agent_type: Optional[str] = None,
+    extra_params: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Main flow for running agents or workflows"""
+    try:
+        # Resolve project paths first
+        if 'project' in config:
+            project_config = config['project']
+            if 'path' in project_config:
+                project_path = Path(project_config['path']).resolve()
+                project_config['path'] = str(project_path)
+                
+                # Resolve workspace root relative to project path if not absolute
+                workspace_root = project_config.get('workspace_root')
+                if workspace_root and not Path(workspace_root).is_absolute():
+                    project_config['workspace_root'] = str(project_path / workspace_root)
+                    
+                logger.info("runner.project.paths",
+                    project_path=str(project_path),
+                    workspace_root=project_config.get('workspace_root'))
+
+        if mode == RunMode.AGENT:
+            if not agent_type or agent_type not in AGENT_REGISTRY:
+                raise ValueError(f"Invalid agent type: {agent_type}")
+                
+            # Run single agent
+            task_config = AGENT_REGISTRY[agent_type](config)
+            context = {"input_data": config.get("input_data", {})}
+            
+            # Add project context if available
+            if 'project' in config:
+                context['project'] = config['project']
+                
+            if extra_params:
+                context.update(extra_params)
+                
+            result = run_agent_task(
+                agent_config=task_config,
+                context=context,
+                task_name=f"test_{agent_type}"
+            )
+            return {
+                "success": True,
+                "result": result.result() if hasattr(result, "result") else result
+            }
+        else:
+            # Run workflow using project path from config if available
+            project_path = config.get('project', {}).get('path')
+            if not project_path:
+                project_path = config.get("project_path", ".")
+            
+            result = run_basic_workflow(
+                project_path=Path(project_path),
+                intent_desc=config.get("intent", {}),
+                config=config
+            )
+            
+            # Extract result from Prefect State
+            if hasattr(result, "result"):
+                workflow_result = result.result()
+            else:
+                workflow_result = result
+                
+            return {
+                "success": True,
+                "result": workflow_result
+            }
+            
+    except Exception as e:
+        logger.error("runner.failed", error=str(e))
+        return {
+            "success": False,
+            "error": str(e),
+            "result": {}
+        }
 
 def format_output(data: Dict[str, Any], mode: RunMode) -> None:
     """Format task output for display"""
@@ -195,91 +309,6 @@ def format_output(data: Dict[str, Any], mode: RunMode) -> None:
         print("Raw data:")
         print(str(data))
 
-"""
-Main flow function for Prefect runner.
-Path: c4h_services/examples/prefect_runner.py
-"""
-
-@flow(name="prefect_runner")
-def run_flow(
-    mode: RunMode,
-    config: Dict[str, Any],
-    agent_type: Optional[str] = None,
-    extra_params: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    """Main flow for running agents or workflows"""
-    try:
-        # Resolve project paths first
-        if 'project' in config:
-            project_config = config['project']
-            if 'path' in project_config:
-                project_path = Path(project_config['path']).resolve()
-                project_config['path'] = str(project_path)
-                
-                # Resolve workspace root relative to project path if not absolute
-                workspace_root = project_config.get('workspace_root')
-                if workspace_root and not Path(workspace_root).is_absolute():
-                    project_config['workspace_root'] = str(project_path / workspace_root)
-                    
-                logger.info("runner.project.paths",
-                    project_path=str(project_path),
-                    workspace_root=project_config.get('workspace_root'))
-
-        if mode == RunMode.AGENT:
-            if not agent_type or agent_type not in AGENT_REGISTRY:
-                raise ValueError(f"Invalid agent type: {agent_type}")
-                
-            # Run single agent
-            task_config = AGENT_REGISTRY[agent_type](config)
-            context = {"input_data": config.get("input_data", {})}
-            
-            # Add project context if available
-            if 'project' in config:
-                context['project'] = config['project']
-                
-            if extra_params:
-                context.update(extra_params)
-                
-            result = run_agent_task(
-                agent_config=task_config,
-                context=context,
-                task_name=f"test_{agent_type}"
-            )
-            return {
-                "success": True,
-                "result": result.result() if hasattr(result, "result") else result
-            }
-        else:
-            # Run full workflow using project path from config if available
-            project_path = config.get('project', {}).get('path')
-            if not project_path:
-                project_path = config.get("project_path", ".")
-            
-            result = run_basic_workflow(
-                project_path=Path(project_path),
-                intent_desc=config.get("intent", {}),
-                config=config
-            )
-            
-            # Extract result from Prefect State
-            if hasattr(result, "result"):
-                workflow_result = result.result()
-            else:
-                workflow_result = result
-                
-            return {
-                "success": True,
-                "result": workflow_result
-            }
-            
-    except Exception as e:
-        logger.error("runner.failed", error=str(e))
-        return {
-            "success": False,
-            "error": str(e),
-            "result": {}
-        }
-
 def main():
     parser = argparse.ArgumentParser(
         description="Prefect runner for agents and workflows"
@@ -304,7 +333,12 @@ def main():
     parser.add_argument(
         "--config",
         required=True,
-        help="Path to YAML config file"
+        help="Path to application config file"
+    )
+    parser.add_argument(
+        "--system-configs",
+        nargs="+",
+        help="Optional system config files in merge order"
     )
     parser.add_argument(
         "--log",
@@ -332,8 +366,11 @@ def main():
             key, value = param.split("=", 1)
             extra_params[key.strip()] = value.strip()
 
-        # Load config
-        config = load_configs(args.config)
+        # Load config with new system config handling
+        config = load_configs(
+            app_config_path=args.config,
+            system_config_paths=args.system_configs
+        )
 
         # Run flow
         result = run_flow(

@@ -5,11 +5,10 @@ providers:
     api_base: "https://api.anthropic.com"
     context_length: 200000
     env_var: "ANTHROPIC_API_KEY"
-    default_model: "claude-3-5-sonnet-20241022"  # Fixed hyphenation
+    default_model: "claude-3-5-sonnet-20241022"
     valid_models:
-      - "claude-3-5-sonnet-latest"
-      - "claude-3-5-sonnet-20241022"  # Fixed
-      - "claude-3-5-haiku-20241022"   # Fixed
+      - "claude-3-5-sonnet-20241022"
+      - "claude-3-5-haiku-20241022"
       - "claude-3-opus-20240229"
       - "claude-3-sonnet-20240229"
       - "claude-3-haiku-20240307"
@@ -24,21 +23,21 @@ providers:
       backoff:
         initial_delay: 1
         max_delay: 30
-  
         exponential: true
 
   openai:
     api_base: "https://api.openai.com/v1"
     env_var: "OPENAI_API_KEY"
-    default_model: "gpt-4o-mini"
+    default_model: "gpt-4o"
     valid_models:
       - "gpt-4o"
       - "gpt-4o-mini"
       - "gpt-4"
+      - "gpt-4-turbo"
       - "o1"
       - "o1-mini"
-      - "o3"
       - "o3-mini"
+      - "o3-mini-high"
     litellm_params:
       retry: true
       max_retries: 3
@@ -56,6 +55,11 @@ providers:
     api_base: "https://generativelanguage.googleapis.com/v1beta"
     context_length: 32000
     env_var: "GEMINI_API_KEY"
+    default_model: "gemini-2"
+    valid_models:
+      - "gemini-1"
+      - "gemini-1.5"
+      - "gemini-2"
 
 llm_config:
   default_provider: "anthropic"
