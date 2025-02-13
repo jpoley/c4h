@@ -9,6 +9,7 @@ import time
 from datetime import datetime
 import litellm
 from litellm import completion
+from c4h_agents.agents.types import LLMProvider, LogDetail  # Added missing imports
 
 logger = structlog.get_logger()
 
@@ -185,6 +186,17 @@ class BaseLLM:
                 "error": error_msg
             }
 
+    def _get_model_str(self) -> str:
+        """Get the appropriate model string for the provider"""
+        if self.provider == LLMProvider.OPENAI:
+            return f"openai/{self.model}"
+        elif self.provider == LLMProvider.ANTHROPIC:
+            return f"anthropic/{self.model}" 
+        elif self.provider == LLMProvider.GEMINI:
+            return f"google/{self.model}"
+        else:
+            return f"{self.provider.value}/{self.model}"
+
     def _setup_litellm(self, provider_config: Dict[str, Any]) -> None:
         """Configure litellm with provider settings"""
         try:
@@ -209,8 +221,12 @@ class BaseLLM:
                 litellm.requests_per_min = rate_limits.get("requests", 50)
                 litellm.token_limit = rate_limits.get("tokens", 4000)
                 litellm.limit_period = rate_limits.get("period", 60)
-                
-            if self._should_log('DEBUG'):
+
+            # Configure api base if provided
+            if "api_base" in provider_config:
+                litellm.api_base = provider_config["api_base"]
+            
+            if self._should_log(LogDetail.DEBUG):
                 logger.debug("litellm.configured", 
                             provider=self.provider.serialize(),
                             retry_settings={

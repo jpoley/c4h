@@ -60,6 +60,7 @@ llm_config:
         - "gemini-1"
         - "gemini-1.5"
         - "gemini-2"
+  
   default_provider: "anthropic"
   default_model: "claude-3-opus-20240229"
   agents:

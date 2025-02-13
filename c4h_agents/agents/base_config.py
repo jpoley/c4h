@@ -152,26 +152,58 @@ class BaseConfig:
             return {}
 
     def _resolve_model(self, explicit_model: Optional[str], provider_config: Dict[str, Any]) -> str:
-        """Resolve model using fallback chain"""
-        # 1. Use explicitly passed model if provided
-        if explicit_model:
-            return explicit_model
-            
-        # 2. Check agent-specific config
-        agent_config = self.config.get("llm_config", {}).get("agents", {}).get(self._get_agent_name(), {})
-        if "model" in agent_config:
-            return agent_config["model"]
-            
-        # 3. Use provider's default model
-        if "default_model" in provider_config:
-            return provider_config["default_model"]
-            
-        # 4. Use system-wide default model
-        system_default = self.config.get("llm_config", {}).get("default_model")
-        if system_default:
-            return system_default
+        """
+        Resolve model using fallback chain with validation against provider config.
         
-        raise ValueError(f"No model specified for provider and no defaults found")
+        Args:
+            explicit_model: Directly specified model name
+            provider_config: Provider configuration dictionary
+            
+        Returns:
+            Resolved model name
+            
+        Raises:
+            ValueError if no valid model can be resolved
+        """
+        try:
+            # 1. Use explicitly passed model if provided
+            if explicit_model:
+                model = explicit_model
+                
+            # 2. Check agent-specific config
+            elif self.config.get("llm_config", {}).get("agents", {}).get(self._get_agent_name(), {}).get("model"):
+                model = self.config["llm_config"]["agents"][self._get_agent_name()]["model"]
+                
+            # 3. Use provider's default model
+            elif "default_model" in provider_config:
+                model = provider_config["default_model"]
+                
+            # 4. Use system-wide default model
+            elif self.config.get("llm_config", {}).get("default_model"):
+                model = self.config["llm_config"]["default_model"]
+                
+            else:
+                raise ValueError(f"No model specified for provider and no defaults found")
+
+            # Validate against provider's valid models if specified
+            valid_models = provider_config.get("valid_models", [])
+            if valid_models and model not in valid_models:
+                logger.warning("config.invalid_model",
+                            model=model,
+                            valid_models=valid_models,
+                            using_default=provider_config.get("default_model"))
+                # Fall back to provider default if invalid
+                model = provider_config.get("default_model")
+                if not model:
+                    raise ValueError(f"Invalid model {model} and no default available")
+
+            return model
+
+        except Exception as e:
+            logger.error("config.model_resolution_failed",
+                        error=str(e),
+                        provider=self.provider.value if hasattr(self, 'provider') else None)
+            raise
 
     def _get_model_str(self) -> str:
         """Get the appropriate model string for the provider"""

@@ -10,7 +10,6 @@ intent:
     - Replace print statements with logging
     - Add logging configuration
 
-# Discovery agent configuration
 llm_config:
   agents:
     discovery:
@@ -19,12 +18,9 @@ llm_config:
         script_path: "./c4h_agents/skills/tartxt.py"  # Explicit path to tartxt.py
         input_paths: ["./"]  # Scan everything in project path
         exclusions: ["**/__pycache__/**"]  # Skip cache directories
-
     solution_designer:
-      temperature: 0.1
-
-    coder:
-      temperature: 0
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-20241022"
 
 runtime:
   workflow:
