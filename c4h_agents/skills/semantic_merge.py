@@ -6,7 +6,7 @@ Path: c4h_agents/skills/semantic_merge.py
 from typing import Dict, Any, Optional
 import structlog
 from pathlib import Path
-from c4h_agents.agents.base import BaseAgent, AgentResponse
+from c4h_agents.agents.base_agent import BaseAgent, AgentResponse 
 from c4h_agents.config import locate_config
 
 logger = structlog.get_logger()

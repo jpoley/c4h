@@ -8,7 +8,7 @@ import structlog
 from prefect import task, get_run_logger
 from pathlib import Path
 
-from c4h_agents.agents.base import BaseAgent
+from c4h_agents.agents.base_agent import BaseAgent, AgentResponse 
 from c4h_agents.skills.semantic_iterator import SemanticIterator
 from c4h_agents.skills.shared.types import ExtractConfig
 from .models import AgentTaskConfig

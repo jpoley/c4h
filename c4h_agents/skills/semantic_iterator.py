@@ -8,7 +8,7 @@ import structlog
 from dataclasses import dataclass
 import json
 from config import locate_config
-from agents.base import BaseAgent, AgentResponse
+from c4h_agents.agents.base_agent import BaseAgent, AgentResponse 
 from skills.shared.types import ExtractConfig
 from skills._semantic_fast import FastExtractor, FastItemIterator
 from skills._semantic_slow import SlowExtractor, SlowItemIterator

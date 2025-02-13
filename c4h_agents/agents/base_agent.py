@@ -3,13 +3,13 @@ Primary base agent implementation with core types and functionality.
 Path: c4h_agents/agents/base_agent.py
 """
 
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Dict, Any, Optional, List, Tuple, Literal, Union
+from typing import Dict, Any, Optional, List, Tuple, Literal
 from enum import Enum
+from dataclasses import dataclass, field
 import structlog
 import json
 from pathlib import Path
+from datetime import datetime
 
 from c4h_agents.core.project import Project
 from c4h_agents.config import locate_keys
@@ -47,15 +47,6 @@ class LLMProvider(str, Enum):
         return f"provider_{self.value}"
 
 @dataclass
-class AgentConfig:
-    """Configuration requirements for base agent"""
-    provider: Literal['anthropic', 'openai', 'gemini']
-    model: str
-    temperature: float = 0
-    api_base: Optional[str] = None
-    context_length: Optional[int] = None
-
-@dataclass
 class AgentResponse:
     """Standard response format for all agents"""
     success: bool
@@ -83,7 +74,7 @@ class BaseAgent(BaseConfig, BaseLLM):
         self.max_continuation_attempts = agent_config.get('max_continuation_attempts', 5)
         self.continuation_token_buffer = agent_config.get('continuation_token_buffer', 1000)
         
-        # Initialize metrics with project context
+        # Initialize metrics as dictionary for backward compatibility
         self.metrics = {
             "total_requests": 0,
             "successful_requests": 0,
@@ -152,7 +143,6 @@ class BaseAgent(BaseConfig, BaseLLM):
                 {"role": "user", "content": user_message}
             ]
 
-            # Use continuation handler for completion
             try:
                 content, raw_response = self._get_completion_with_continuation(messages)
                 
@@ -175,17 +165,28 @@ class BaseAgent(BaseConfig, BaseLLM):
                 
         except Exception as e:
             logger.error("process.failed", error=str(e))
-            return AgentResponse(success=False, data={}, error=str(e))
-        
+            return AgentResponse(
+                success=False, 
+                data={}, 
+                error=str(e)
+            )
+
+    def _get_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract data from context with basic formatting"""
+        try:
+            if isinstance(context, dict):
+                return context
+            return {'content': str(context)}
+        except Exception as e:
+            logger.error("get_data.failed", error=str(e))
+            return {}
+
     def _format_request(self, context: Dict[str, Any]) -> str:
-        """Format request message"""
+        """Format request message - can be overridden by derived classes"""
         return str(context)
     
     def _get_llm_content(self, response: Any) -> Any:
-        """
-        Single point of LLM response interpretation.
-        Ensures consistent interface for all agents/skills.
-        """
+        """Extract content from LLM response with consistent interface"""
         try:
             if hasattr(response, 'choices') and response.choices:
                 content = response.choices[0].message.content
@@ -200,59 +201,54 @@ class BaseAgent(BaseConfig, BaseLLM):
             logger.error("content_extraction.failed", error=str(e))
             return str(response)
 
+    def _process_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
+        """Process LLM response into standardized format"""
+        try:
+            # Extract content using standard helper
+            processed_content = self._get_llm_content(content)
+            
+            # Debug logging for response processing
+            if self._should_log(LogDetail.DEBUG):
+                logger.debug("agent.processing_response",
+                            content_length=len(str(processed_content)) if processed_content else 0,
+                            response_type=type(raw_response).__name__)
+
+            # Build standard response structure
+            response = {
+                "response": processed_content,
+                "raw_output": str(raw_response),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+            # Log and include token usage if available
+            if hasattr(raw_response, 'usage'):
+                usage = raw_response.usage
+                usage_data = {
+                    "completion_tokens": getattr(usage, 'completion_tokens', 0),
+                    "prompt_tokens": getattr(usage, 'prompt_tokens', 0),
+                    "total_tokens": getattr(usage, 'total_tokens', 0)
+                }
+                logger.info("llm.token_usage", **usage_data)
+                response["usage"] = usage_data
+
+            return response
+
+        except Exception as e:
+            logger.error("response_processing.failed", error=str(e))
+            return {
+                "response": str(content),
+                "raw_output": str(raw_response),
+                "timestamp": datetime.utcnow().isoformat(),
+                "error": str(e)
+            }
+
     def _get_required_keys(self) -> List[str]:
-        """
-        Define keys required by this agent.
-        Override in subclasses to specify required input keys.
-        """
+        """Define keys required by this agent"""
         return []
 
-    def _locate_data(self, data: Dict[str, Any], keys: List[str]) -> Dict[str, Tuple[Any, List[str]]]:
-        """
-        Locate multiple required keys in input data.
-        Uses same pattern as config location.
-        """
-        return locate_keys(data, keys)
-
-    def _get_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Extract required data using key discovery with JSON parsing.
-        Each agent specifies its required keys.
-        """
-        required = self._get_required_keys()
-        if not required:
-            return context
-            
-        try:
-            results = {}
-            located = locate_keys(context, required)
-            
-            for key, (value, path) in located.items():
-                # Handle string JSON values
-                if isinstance(value, str):
-                    try:
-                        parsed = json.loads(value)
-                        results[key] = parsed
-                        continue
-                    except json.JSONDecodeError:
-                        pass
-                        
-                # Use value as-is if not JSON string
-                results[key] = value
-                
-                if self._should_log(LogDetail.DEBUG):
-                    logger.debug("agent.data_extracted",
-                               key=key,
-                               path=path,
-                               value_type=type(results[key]).__name__)
-                               
-            return results
-            
-        except Exception as e:
-            logger.error("agent.data_extraction_failed",
-                        error=str(e),
-                        required_keys=required)
-            return {}
+    def _get_agent_name(self) -> str:
+        """Get agent name for config lookup - default to class name in lowercase"""
+        return self.__class__.__name__.lower()
 
     def _get_system_message(self) -> str:
         """Get system message from config"""
@@ -266,10 +262,3 @@ class BaseAgent(BaseConfig, BaseLLM):
         if prompt_type not in prompts:
             raise ValueError(f"No prompt template found for type: {prompt_type}")
         return prompts[prompt_type]
-
-    def _get_agent_name(self) -> str:
-        """Get agent name for config lookup. Must be implemented by subclasses."""
-        raise NotImplementedError("Agent classes must implement _get_agent_name")
-
-# Re-export types for backward compatibility
-__all__ = ['BaseAgent', 'AgentResponse', 'LogDetail', 'LLMProvider', 'AgentConfig']

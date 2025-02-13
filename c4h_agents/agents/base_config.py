@@ -12,7 +12,10 @@ import time
 
 from c4h_agents.core.project import Project, ProjectPaths
 from c4h_agents.config import locate_config, locate_keys
-from .base_agent import LLMProvider, LogDetail
+from .types import (
+    LogDetail, 
+    LLMProvider
+)
 
 logger = structlog.get_logger()
 
@@ -60,10 +63,6 @@ class BaseConfig:
             "project": self.project.metadata.name if self.project else None
         }
 
-        # Set logging detail level from config
-        log_level = self.config.get('logging', {}).get('agent_level', 'basic')
-        self.log_level = LogDetail.from_str(log_level)
-
     def _get_provider_config(self, provider: LLMProvider) -> Dict[str, Any]:
         """Get provider configuration from merged config."""
         try:
@@ -101,17 +100,19 @@ class BaseConfig:
     def _get_agent_config(self) -> Dict[str, Any]:
         """Extract relevant config for this agent."""
         try:
+            agent_name = self._get_agent_name() 
+            
             # If we have a project, use its configuration system
             if self.project:
-                config = self.project.get_agent_config(self._get_agent_name())
+                config = self.project.get_agent_config(agent_name)
                 logger.debug("agent.using_project_config",
-                        agent=self._get_agent_name(),
+                        agent=agent_name,
                         project=self.project.metadata.name)
                 return config
                 
             # Use locate_config to find agent's settings in llm_config.agents
-            agent_config = locate_config(self.config or {}, self._get_agent_name())
-            
+            agent_config = locate_config(self.config or {}, agent_name)
+
             # Get provider name - prefer agent specific over llm_config default
             provider_name = agent_config.get('provider', 
                                     self.config.get('llm_config', {}).get('default_provider'))

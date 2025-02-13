@@ -10,7 +10,7 @@ import structlog
 import shutil
 from datetime import datetime
 
-from c4h_agents.agents.base import BaseAgent, AgentResponse
+from c4h_agents.agents.base_agent import BaseAgent, AgentResponse 
 from c4h_agents.skills.semantic_merge import SemanticMerge
 
 logger = structlog.get_logger()

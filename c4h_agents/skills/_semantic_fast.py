@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Optional, Iterator, Union
 import structlog
 from dataclasses import dataclass
 import json
-from agents.base import BaseAgent, AgentResponse
+from c4h_agents.agents.base_agent import BaseAgent, AgentResponse 
 from skills.shared.types import ExtractConfig
 from config import locate_config
 

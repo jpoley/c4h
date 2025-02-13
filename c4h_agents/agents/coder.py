@@ -8,7 +8,7 @@ import structlog
 from datetime import datetime, timezone
 from pathlib import Path
 
-from c4h_agents.agents.base import BaseAgent, AgentResponse
+from c4h_agents.agents.base_agent import BaseAgent, AgentResponse 
 from c4h_agents.skills.semantic_merge import SemanticMerge
 from c4h_agents.skills.semantic_iterator import SemanticIterator
 from c4h_agents.skills.asset_manager import AssetManager

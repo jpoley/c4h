@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional
 import structlog
 from datetime import datetime
 import json
-from .base import BaseAgent, AgentResponse, LogDetail
+from c4h_agents.agents.base_agent import BaseAgent, LogDetail, AgentResponse 
 from config import locate_config
 
 logger = structlog.get_logger()
@@ -174,3 +174,25 @@ class SolutionDesigner(BaseAgent):
                 "raw_content": content,
                 "timestamp": datetime.utcnow().isoformat()
             }
+
+    """
+    Solution designer implementation focused on synchronous operation.
+    Path: c4h_agents/agents/solution_designer.py
+    """
+
+    def _get_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract data from context with discovery results"""
+        try:
+            if isinstance(context, dict):
+                if 'input_data' in context:
+                    return {
+                        'discovery_data': context['input_data'].get('discovery_data', {}),
+                        'intent': context['input_data'].get('intent', {})
+                    }
+                return context
+                
+            return {'content': str(context)}
+            
+        except Exception as e:
+            logger.error("solution_designer.get_data_failed", error=str(e))
+            return {}

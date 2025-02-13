@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, field
-from .base import BaseAgent, AgentResponse
+from c4h_agents.agents.base_agent import BaseAgent, AgentResponse 
 from config import locate_config
 
 logger = structlog.get_logger()

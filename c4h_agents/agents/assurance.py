@@ -10,11 +10,11 @@ import subprocess
 import sys
 
 from dataclasses import dataclass
-import tempfile
 import shutil
 import os
 from config import locate_config
-from .base import BaseAgent, AgentResponse
+from c4h_agents.agents.base_agent import BaseAgent, AgentResponse 
+
 
 logger = structlog.get_logger()
 
