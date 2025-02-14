@@ -49,9 +49,12 @@ class LLMProvider(str, Enum):
 @dataclass
 class AgentResponse:
     """Standard response format for all agents"""
-    success: bool
+    success: bool 
     data: Dict[str, Any]
     error: Optional[str] = None
+    raw_input: Optional[Dict[str, Any]] = field(default=None)    # Complete input including prompts
+    raw_output: Optional[Dict[str, Any]] = field(default=None)   # Complete output from LLM
+    metrics: Optional[Dict[str, Any]] = field(default=None)
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
 class BaseAgent(BaseConfig, BaseLLM):
@@ -123,9 +126,14 @@ class BaseAgent(BaseConfig, BaseLLM):
         """Main process entry point"""
         return self._process(context)
 
-    @log_operation("process")
+
+    """
+    Core processing methods for base agent.
+    Path: c4h_agents/agents/base_agent.py
+    """
+
     def _process(self, context: Dict[str, Any]) -> AgentResponse:
-        """Internal synchronous implementation"""
+        """Internal synchronous implementation with raw input/output capture"""
         try:
             if self._should_log(LogDetail.DETAILED):
                 logger.info("agent.processing",
@@ -143,6 +151,17 @@ class BaseAgent(BaseConfig, BaseLLM):
                 {"role": "user", "content": user_message}
             ]
 
+            # Capture raw input for response
+            raw_input = {
+                "messages": messages,
+                "context": context,
+                "config": {
+                    "provider": self.provider.value,
+                    "model": self.model,
+                    "temperature": self.temperature
+                }
+            }
+
             try:
                 content, raw_response = self._get_completion_with_continuation(messages)
                 
@@ -152,7 +171,9 @@ class BaseAgent(BaseConfig, BaseLLM):
                 return AgentResponse(
                     success=True,
                     data=processed_data,
-                    error=None
+                    error=None,
+                    raw_input=raw_input,
+                    raw_output=raw_response
                 )
                 
             except Exception as e:
@@ -160,7 +181,9 @@ class BaseAgent(BaseConfig, BaseLLM):
                 return AgentResponse(
                     success=False,
                     data={},
-                    error=f"LLM completion failed: {str(e)}"
+                    error=f"LLM completion failed: {str(e)}",
+                    raw_input=raw_input,
+                    raw_output=None
                 )
                 
         except Exception as e:
@@ -168,8 +191,11 @@ class BaseAgent(BaseConfig, BaseLLM):
             return AgentResponse(
                 success=False, 
                 data={}, 
-                error=str(e)
+                error=str(e),
+                raw_input=None,
+                raw_output=None
             )
+
 
     def _get_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Extract data from context with basic formatting"""

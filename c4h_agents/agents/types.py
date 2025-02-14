@@ -86,7 +86,8 @@ class AgentResponse:
     success: bool
     data: Dict[str, Any]
     error: Optional[str] = None
-    raw_response: Optional[Any] = None
+    raw_input: Optional[Dict[str, Any]] = None    # Complete input including prompts
+    raw_output: Optional[Dict[str, Any]] = None   # Complete output from LLM
     metrics: Optional[Dict[str, Any]] = None
     timestamp: datetime = field(default_factory=datetime.utcnow)
 

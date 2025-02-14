@@ -1,11 +1,10 @@
 """
-Basic intent workflow implementation focusing on core refactoring flow.
+Raw workflow event storage with robust project handling.
 Path: c4h_services/src/intent/impl/prefect/workflows.py
 """
 
 from prefect import flow, get_run_logger
 from prefect.runtime import flow_run
-
 from prefect.states import Completed, Failed
 from typing import Dict, Any, Optional
 import structlog
@@ -29,9 +28,21 @@ def store_event(workflow_dir: Path, stage: str, event_num: str, content: Any, co
         with open(event_file, 'w', encoding='utf-8') as f:
             f.write(f'Timestamp: {datetime.now(timezone.utc).isoformat()}\n')
             f.write(f'Stage: {stage}\n')
+            
+            # Store raw input context including prompts
             f.write('\nInput Context:\n')
-            f.write(str(context))
-            f.write('\n\nOutput Content:\n')
+            if hasattr(content, 'raw_input') and content.raw_input:
+                f.write('Raw Input:\n')
+                f.write(str(content.raw_input))
+            else:
+                f.write(str(context))
+            
+            # Store raw agent output
+            f.write('\nOutput Content:\n')
+            if hasattr(content, 'raw_output') and content.raw_output:
+                f.write('Raw Output:\n')
+                f.write(str(content.raw_output))
+            f.write('\nProcessed Output:\n')
             f.write(str(content))
     except Exception as e:
         logger.error("workflow.storage.event_failed",
@@ -86,12 +97,7 @@ def run_basic_workflow(
     intent_desc: Dict[str, Any],
     config: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """
-    Basic workflow implementing the core refactoring steps:
-    1. Discovery
-    2. Solution Design
-    3. Code Implementation
-    """
+    """Basic workflow implementing the core refactoring steps"""
     flow_logger = get_run_logger()
     flow_logger.info("Starting basic refactoring workflow")
     
@@ -118,6 +124,8 @@ def run_basic_workflow(
         )
 
         if not project_dir.exists():
+            if workflow_dir:
+                store_workflow_state(workflow_dir, "error: project path not found")
             return Failed(
                 message=f"Project path does not exist: {project_dir}",
                 result={
@@ -127,29 +135,24 @@ def run_basic_workflow(
                 }
             )
 
-        # Update context with resolved project path
+        # Run discovery with proper project context
         discovery_config = create_discovery_task(config)
+        discovery_context = {
+            "project_path": str(project_dir),
+            "project": {
+                "path": str(project_dir),
+                "workspace_root": config.get('project', {}).get('workspace_root')
+            }
+        }
         discovery_result = run_agent_task(
             agent_config=discovery_config,
-            context={
-                "project_path": str(project_dir),
-                "project": {
-                    "path": str(project_dir),
-                    "workspace_root": config.get('project', {}).get('workspace_root')
-                }
-            },
+            context=discovery_context,
             task_name="discovery"
         )
         
         # Store raw discovery event
         if workflow_dir:
-            store_event(workflow_dir, "discovery", "01", discovery_result, {
-                "project_path": str(project_dir),
-                "project": {
-                    "path": str(project_dir),
-                    "workspace_root": config.get('project', {}).get('workspace_root')
-                }
-            })
+            store_event(workflow_dir, "discovery", "01", discovery_result, discovery_context)
         
         if not discovery_result["success"]:
             if workflow_dir:
@@ -159,41 +162,33 @@ def run_basic_workflow(
                 result={
                     "status": "error",
                     "error": discovery_result.get('error'),
-                    "stage": "discovery"
+                    "stage": "discovery",
                 }
             )
 
         flow_logger.info("Discovery completed successfully")
 
-        # Ensure project context is passed to solution design
+        # Run solution design with complete context
         solution_config = create_solution_task(config)
+        solution_context = {
+            "input_data": {
+                "discovery_data": discovery_result["result_data"],
+                "intent": intent_desc,
+                "project": {
+                    "path": str(project_dir),
+                    "workspace_root": config.get('project', {}).get('workspace_root')
+                }
+            }
+        }
         solution_result = run_agent_task(
             agent_config=solution_config,
-            context={
-                "input_data": {
-                    "discovery_data": discovery_result["result_data"],
-                    "intent": intent_desc,
-                    "project": {
-                        "path": str(project_dir),
-                        "workspace_root": config.get('project', {}).get('workspace_root')
-                    }
-                }
-            },
+            context=solution_context,
             task_name="solution_design"
         )
 
         # Store raw solution event
         if workflow_dir:
-            store_event(workflow_dir, "solution_design", "02", solution_result, {
-                "input_data": {
-                    "discovery_data": discovery_result["result_data"],
-                    "intent": intent_desc,
-                    "project": {
-                        "path": str(project_dir),
-                        "workspace_root": config.get('project', {}).get('workspace_root')
-                    }
-                }
-            })
+            store_event(workflow_dir, "solution_design", "02", solution_result, solution_context)
 
         if not solution_result["success"]:
             if workflow_dir:
@@ -210,29 +205,24 @@ def run_basic_workflow(
 
         flow_logger.info("Solution design completed successfully")
 
-        # Pass project context to coder
+        # Run coder with complete context
         coder_config = create_coder_task(config)
+        coder_context = {
+            "input_data": solution_result["result_data"],
+            "project": {
+                "path": str(project_dir),
+                "workspace_root": config.get('project', {}).get('workspace_root')
+            }
+        }
         coder_result = run_agent_task(
             agent_config=coder_config,
-            context={
-                "input_data": solution_result["result_data"],
-                "project": {
-                    "path": str(project_dir),
-                    "workspace_root": config.get('project', {}).get('workspace_root')
-                }
-            },
+            context=coder_context,
             task_name="coder"
         )
 
         # Store raw coder event
         if workflow_dir:
-            store_event(workflow_dir, "coder", "03", coder_result, {
-                "input_data": solution_result["result_data"],
-                "project": {
-                    "path": str(project_dir),
-                    "workspace_root": config.get('project', {}).get('workspace_root')
-                }
-            })
+            store_event(workflow_dir, "coder", "03", coder_result, coder_context)
 
         if not coder_result["success"]:
             if workflow_dir:
