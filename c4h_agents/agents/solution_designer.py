@@ -24,53 +24,45 @@ class SolutionDesigner(BaseAgent):
         """Get agent name for config lookup"""
         return "solution_designer"
 
+
     def _format_request(self, context: Dict[str, Any]) -> str:
-        """Format solution design request with proper ordering:
-        1. System prompt (how to format output)
-        2. Discovery context (what code exists)
-        3. Intent (what changes to make)
-        """
+        """Format solution design request"""
         try:
-            # Get our agent-specific config including intent
-            agent_config = locate_config(self.config or {}, self._get_agent_name())
-            
-            # Get intent from agent's config section
-            intent_desc = agent_config.get('intent', {}).get('description', '')
-            if not intent_desc:
-                logger.warning("solution_designer.no_intent_found",
-                            config_keys=list(agent_config.keys()))
-
-            # Get discovery data from context
-            input_data = context.get('input_data', {})
-            discovery_data = input_data.get('discovery_data', {})
+            # Get discovery data
+            discovery_data = context.get('discovery_data', {})
             raw_output = discovery_data.get('raw_output', '')
+            
+            # Get intent from context or config
+            intent = context.get('intent', {})
+            if isinstance(intent, dict):
+                intent_desc = intent.get('description', '')
+            else:
+                intent_desc = str(intent)
 
-            # Log request components at debug level
+            # Log request components
             if self._should_log(LogDetail.DEBUG):
                 logger.debug("solution_designer.format_request",
                             has_discovery=bool(raw_output),
-                            intent_length=len(intent_desc),
                             discovery_length=len(raw_output),
+                            intent_length=len(intent_desc),
                             iteration=context.get('iteration', 0))
                     
-                # Log content previews
                 logger.debug("solution_designer.request_preview",
                             intent_preview=intent_desc[:100] + "..." if len(intent_desc) > 100 else intent_desc,
                             discovery_preview=raw_output[:100] + "..." if len(raw_output) > 100 else raw_output)
 
-            # Get solution template from agent's prompts
+            # Get solution template
             solution_template = self._get_prompt('solution')
             if self._should_log(LogDetail.DEBUG):
                 logger.debug("solution_designer.template_loaded",
-                        template_length=len(solution_template))
+                            template_length=len(solution_template))
 
-            # Format the complete request
+            # Format request
             formatted_request = solution_template.format(
                 source_code=raw_output,
                 intent=intent_desc
             )
 
-            # Log final request length
             if self._should_log(LogDetail.DEBUG):
                 logger.debug("solution_designer.request_formatted",
                             request_length=len(formatted_request))
@@ -183,16 +175,23 @@ class SolutionDesigner(BaseAgent):
     def _get_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Extract data from context with discovery results"""
         try:
+            input_data = {}
             if isinstance(context, dict):
                 if 'input_data' in context:
-                    return {
-                        'discovery_data': context['input_data'].get('discovery_data', {}),
-                        'intent': context['input_data'].get('intent', {})
-                    }
-                return context
+                    input_data = context['input_data']
+                else:
+                    input_data = context
+
+                # Always log what we found
+                logger.debug("solution_designer.data_extraction",
+                            has_discovery='discovery_data' in input_data,
+                            has_intent='intent' in input_data,
+                            context_keys=list(context.keys()))
+                    
+                return input_data
                 
             return {'content': str(context)}
-            
+                
         except Exception as e:
             logger.error("solution_designer.get_data_failed", error=str(e))
             return {}

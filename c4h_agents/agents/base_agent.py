@@ -13,6 +13,7 @@ from datetime import datetime
 
 from c4h_agents.core.project import Project
 from c4h_agents.config import locate_keys
+from .types import LLMMessages
 from .base_config import BaseConfig, log_operation
 from .base_llm import BaseLLM
 
@@ -47,16 +48,24 @@ class LLMProvider(str, Enum):
         return f"provider_{self.value}"
 
 @dataclass
-class AgentResponse:
-    """Standard response format for all agents"""
-    success: bool 
-    data: Dict[str, Any]
-    error: Optional[str] = None
-    raw_input: Optional[Dict[str, Any]] = field(default=None)    # Complete input including prompts
-    raw_output: Optional[Dict[str, Any]] = field(default=None)   # Complete output from LLM
-    metrics: Optional[Dict[str, Any]] = field(default=None)
+class AgentInput:
+    """Complete input capture for agent operations"""
+    system_prompt: str = ""
+    user_message: str = ""
+    formatted_request: str = "" 
+    raw_context: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
+@dataclass
+class AgentResponse:
+    """Standard response format for all agents"""
+    success: bool
+    data: Dict[str, Any]
+    error: Optional[str] = None
+    llm_input: Optional[AgentInput] = None
+    raw_output: Optional[Any] = None
+    metrics: Optional[Dict[str, Any]] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.utcnow)
 class BaseAgent(BaseConfig, BaseLLM):
     """Base agent implementation"""
     
@@ -126,14 +135,13 @@ class BaseAgent(BaseConfig, BaseLLM):
         """Main process entry point"""
         return self._process(context)
 
-
     """
-    Core processing methods for base agent.
+    Base agent processing implementation.
     Path: c4h_agents/agents/base_agent.py
     """
 
     def _process(self, context: Dict[str, Any]) -> AgentResponse:
-        """Internal synchronous implementation with raw input/output capture"""
+        """Internal synchronous implementation"""
         try:
             if self._should_log(LogDetail.DETAILED):
                 logger.info("agent.processing",
@@ -145,24 +153,29 @@ class BaseAgent(BaseConfig, BaseLLM):
             # Format request before sending
             system_message = self._get_system_message()
             user_message = self._format_request(data)
+            formatted_request = self._format_request(data)
             
+            if self._should_log(LogDetail.DEBUG):
+                logger.debug("agent.messages",
+                            system_length=len(system_message),
+                            user_length=len(user_message))
+            
+            # Create complete message set for LLM
             messages = [
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": user_message}
             ]
 
-            # Capture raw input for response
-            raw_input = {
-                "messages": messages,
-                "context": context,
-                "config": {
-                    "provider": self.provider.value,
-                    "model": self.model,
-                    "temperature": self.temperature
-                }
-            }
+            # Create input record
+            llm_input = AgentInput(
+                system_prompt=system_message,
+                user_message=user_message,
+                formatted_request=formatted_request,
+                raw_context=context
+            )
 
             try:
+                # Get LLM completion
                 content, raw_response = self._get_completion_with_continuation(messages)
                 
                 # Process response with integrity checks
@@ -172,8 +185,9 @@ class BaseAgent(BaseConfig, BaseLLM):
                     success=True,
                     data=processed_data,
                     error=None,
-                    raw_input=raw_input,
-                    raw_output=raw_response
+                    llm_input=llm_input,
+                    raw_output=raw_response,
+                    metrics={"token_usage": getattr(raw_response, 'usage', {})}
                 )
                 
             except Exception as e:
@@ -182,8 +196,7 @@ class BaseAgent(BaseConfig, BaseLLM):
                     success=False,
                     data={},
                     error=f"LLM completion failed: {str(e)}",
-                    raw_input=raw_input,
-                    raw_output=None
+                    llm_input=llm_input
                 )
                 
         except Exception as e:
@@ -191,11 +204,8 @@ class BaseAgent(BaseConfig, BaseLLM):
             return AgentResponse(
                 success=False, 
                 data={}, 
-                error=str(e),
-                raw_input=None,
-                raw_output=None
+                error=str(e)
             )
-
 
     def _get_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Extract data from context with basic formatting"""

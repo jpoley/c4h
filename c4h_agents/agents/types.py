@@ -39,6 +39,16 @@ class LLMProvider(str, Enum):
         return f"provider_{self.value}"
 
 @dataclass
+class LLMMessages:
+    """Complete message set for LLM interactions"""
+    system: str                       # System prompt/persona
+    user: str                        # User message content
+    formatted_request: str           # Final formatted request
+    raw_context: Dict[str, Any]      # Original input context
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
 class AgentConfig:
     """Configuration requirements for agent instantiation"""
     provider: Literal['anthropic', 'openai', 'gemini']
@@ -86,11 +96,11 @@ class AgentResponse:
     success: bool
     data: Dict[str, Any]
     error: Optional[str] = None
-    raw_input: Optional[Dict[str, Any]] = None    # Complete input including prompts
-    raw_output: Optional[Dict[str, Any]] = None   # Complete output from LLM
+    messages: Optional[LLMMessages] = None      # Complete messages including system prompt
+    raw_output: Optional[Dict[str, Any]] = None # Complete output from LLM
     metrics: Optional[Dict[str, Any]] = None
     timestamp: datetime = field(default_factory=datetime.utcnow)
-
+    
 @dataclass 
 class ProjectPaths:
     """Standard paths used across agent operations"""
