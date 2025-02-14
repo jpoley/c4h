@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional
 import structlog
 from dataclasses import dataclass
 from datetime import datetime
-from agents.base import BaseAgent, AgentResponse
+from c4h_agents.agents.base_agent import BaseAgent, AgentResponse 
 
 logger = structlog.get_logger()
 
