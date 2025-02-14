@@ -27,45 +27,42 @@ Path: c4h_services/src/intent/impl/prefect/workflows.py
 """
 
 def store_event(workflow_dir: Path, stage: str, event_num: str, content: Any, context: Dict[str, Any] = None) -> None:
-    """Store raw event content and input context without parsing"""
+    """Store raw event content including complete prompts"""
     try:
         event_file = workflow_dir / 'events' / f'{event_num}_{stage}.txt'
         with open(event_file, 'w', encoding='utf-8') as f:
             f.write(f'Timestamp: {datetime.now(timezone.utc).isoformat()}\n')
             f.write(f'Stage: {stage}\n\n')
             
-            # Store complete LLM input if available
+            # Store complete LLM inputs
             if hasattr(content, 'llm_input') and content.llm_input:
-                f.write('LLM Input:\n')
+                f.write('Complete Prompts:\n')
                 f.write('-' * 80 + '\n')
-                f.write('System Prompt:\n')
+                f.write('System Prompt (Persona):\n')
                 f.write(content.llm_input.system_prompt)
-                f.write('\n\nUser Message:\n')
+                f.write('\n\nUser Request:\n')
                 f.write(content.llm_input.user_message)
-                f.write('\n\nFormatted Request:\n')
-                f.write(content.llm_input.formatted_request)
                 f.write('\n' + '-' * 80 + '\n\n')
             
-            # Store original context
+            # Store input context
             f.write('Input Context:\n')
             f.write(str(context))
             
-            # Store raw response data
+            # Store outputs
             f.write('\nOutput Content:\n')
             if hasattr(content, 'raw_output') and content.raw_output:
-                f.write('Raw Output:\n')
+                f.write('Raw LLM Response:\n')
                 f.write(str(content.raw_output))
             
-            # Store processed data
             f.write('\nProcessed Output:\n')
             if hasattr(content, 'data'):
                 f.write(str(content.data))
             else:
                 f.write(str(content))
                 
-            # Store metrics if available
+            # Include metrics
             if hasattr(content, 'metrics') and content.metrics:
-                f.write('\nMetrics:\n')
+                f.write('\nExecution Metrics:\n')
                 f.write(str(content.metrics))
                 
     except Exception as e:

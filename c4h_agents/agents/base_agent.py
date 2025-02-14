@@ -135,8 +135,9 @@ class BaseAgent(BaseConfig, BaseLLM):
         """Main process entry point"""
         return self._process(context)
 
+
     """
-    Base agent processing implementation.
+    Primary base agent implementation.
     Path: c4h_agents/agents/base_agent.py
     """
 
@@ -150,11 +151,13 @@ class BaseAgent(BaseConfig, BaseLLM):
             # Get required data using discovery pattern 
             data = self._get_data(context)
             
-            # Format request before sending
+            # Get system message first
             system_message = self._get_system_message()
-            user_message = self._format_request(data)
-            formatted_request = self._format_request(data)
             
+            # Format user request once
+            user_message = self._format_request(data)
+            
+            # Log both messages at debug
             if self._should_log(LogDetail.DEBUG):
                 logger.debug("agent.messages",
                             system_length=len(system_message),
@@ -166,11 +169,11 @@ class BaseAgent(BaseConfig, BaseLLM):
                 {"role": "user", "content": user_message}
             ]
 
-            # Create input record
+            # Create input record with full prompts
             llm_input = AgentInput(
                 system_prompt=system_message,
                 user_message=user_message,
-                formatted_request=formatted_request,
+                formatted_request=user_message,  # No need to reformat
                 raw_context=context
             )
 
