@@ -3,7 +3,7 @@ Core type definitions for agent system.
 Path: c4h_agents/agents/types.py
 """
 
-from typing import Dict, Any, Optional, List, Literal
+from typing import Dict, Any, Optional, List, Literal, Union
 from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -13,7 +13,7 @@ class LogDetail(str, Enum):
     """Log detail levels for agent operations"""
     MINIMAL = "minimal"     # Only errors and critical info
     BASIC = "basic"        # Standard operation logging
-    DETAILED = "detailed"  # Full operation details
+    DETAILED = "detailed"  # Full operation details 
     DEBUG = "debug"        # Debug level with content samples
     
     @classmethod
@@ -38,7 +38,7 @@ class LLMProvider(str, Enum):
         """Safe serialization for metrics and logging"""
         return f"provider_{self.value}"
 
-@dataclass
+@dataclass 
 class LLMMessages:
     """Complete message set for LLM interactions"""
     system: str                       # System prompt/persona
@@ -47,6 +47,60 @@ class LLMMessages:
     raw_context: Dict[str, Any]      # Original input context
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
+@dataclass
+class AgentInput:
+    """Complete input capture for agent operations"""
+    system_prompt: str = ""
+    user_message: str = ""
+    formatted_request: str = "" 
+    raw_context: Dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+
+@dataclass
+class AgentResponse:
+    """Standard response format for all agent operations"""
+    success: bool
+    data: Dict[str, Any]
+    error: Optional[str] = None
+    messages: Optional[LLMMessages] = None      # Complete messages including system prompt
+    raw_output: Optional[Dict[str, Any]] = None # Complete output from LLM
+    metrics: Optional[Dict[str, Any]] = None    # Performance metrics
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+
+@dataclass 
+class AgentMetrics:
+    """Standard metrics tracking for agent operations"""
+    total_requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    total_duration: float = 0.0
+    continuation_attempts: int = 0
+    last_error: Optional[str] = None
+    start_time: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    project: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert metrics to plain dictionary for serialization"""
+        return {
+            "total_requests": self.total_requests,
+            "successful_requests": self.successful_requests,
+            "failed_requests": self.failed_requests,
+            "total_duration": self.total_duration,
+            "continuation_attempts": self.continuation_attempts,
+            "last_error": self.last_error,
+            "start_time": self.start_time,
+            "project": self.project
+        }
+
+@dataclass 
+class ProjectPaths:
+    """Standard paths used across agent operations"""
+    root: Path              # Project root directory
+    workspace: Path         # Working files location  
+    source: Path           # Source code directory
+    output: Path           # Output directory
+    config: Path           # Configuration location
+    backup: Optional[Path] = None  # Optional backup directory
 
 @dataclass
 class AgentConfig:
@@ -59,54 +113,3 @@ class AgentConfig:
     max_retries: int = 3
     retry_delay: int = 30
     log_level: LogDetail = LogDetail.BASIC
-
-"""
-Core type definitions for agent system.
-Path: c4h_agents/agents/types.py
-"""
-
-
-@dataclass
-class AgentMetrics:
-    """Standard metrics tracking for agent operations with mutable dictionary interface"""
-    _data: Dict[str, Any] = field(default_factory=lambda: {
-        "total_requests": 0,
-        "successful_requests": 0,
-        "failed_requests": 0,
-        "total_duration": 0.0,
-        "continuation_attempts": 0,
-        "last_error": None,
-        "start_time": datetime.utcnow().isoformat(),
-        "project": None
-    })
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-        
-    def __setitem__(self, key: str, value: Any) -> None:
-        self._data[key] = value
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert metrics to plain dictionary for serialization"""
-        return self._data.copy()
-
-@dataclass
-class AgentResponse:
-    """Standard response format for all agent operations"""
-    success: bool
-    data: Dict[str, Any]
-    error: Optional[str] = None
-    messages: Optional[LLMMessages] = None      # Complete messages including system prompt
-    raw_output: Optional[Dict[str, Any]] = None # Complete output from LLM
-    metrics: Optional[Dict[str, Any]] = None
-    timestamp: datetime = field(default_factory=datetime.utcnow)
-    
-@dataclass 
-class ProjectPaths:
-    """Standard paths used across agent operations"""
-    root: Path              # Project root directory
-    workspace: Path         # Working files location  
-    source: Path           # Source code directory
-    output: Path           # Output directory
-    config: Path           # Configuration location
-    backup: Optional[Path] = None  # Optional backup directory

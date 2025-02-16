@@ -163,11 +163,24 @@ class BaseAgent(BaseConfig, BaseLLM):
                             system_length=len(system_message),
                             user_length=len(user_message))
             
-            # Create complete message set for LLM
-            messages = [
+            # Create LLMMessages for response
+            messages = LLMMessages(
+                system=system_message,
+                user=user_message,
+                formatted_request=user_message,
+                raw_context=context
+            )
+
+            # Create LLM message format
+            llm_messages = [
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": user_message}
             ]
+
+            if self._should_log(LogDetail.DEBUG):
+                logger.debug("agent.prompt_messages",
+                            system=llm_messages[0]["content"],
+                            user=llm_messages[1]["content"])
 
             # Create input record with full prompts
             llm_input = AgentInput(
@@ -179,15 +192,16 @@ class BaseAgent(BaseConfig, BaseLLM):
 
             try:
                 # Get LLM completion
-                content, raw_response = self._get_completion_with_continuation(messages)
+                content, raw_response = self._get_completion_with_continuation(llm_messages)
                 
                 # Process response with integrity checks
                 processed_data = self._process_response(content, raw_response)
-                
+
                 return AgentResponse(
                     success=True,
                     data=processed_data,
                     error=None,
+                    messages=messages,
                     llm_input=llm_input,
                     raw_output=raw_response,
                     metrics={"token_usage": getattr(raw_response, 'usage', {})}
@@ -199,9 +213,10 @@ class BaseAgent(BaseConfig, BaseLLM):
                     success=False,
                     data={},
                     error=f"LLM completion failed: {str(e)}",
+                    messages=messages,
                     llm_input=llm_input
                 )
-                
+                    
         except Exception as e:
             logger.error("process.failed", error=str(e))
             return AgentResponse(
