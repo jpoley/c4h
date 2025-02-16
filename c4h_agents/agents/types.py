@@ -67,6 +67,11 @@ class AgentResponse:
     metrics: Optional[Dict[str, Any]] = None    # Performance metrics
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
+"""
+Quick fix for AgentMetrics to add dict access while keeping dataclass structure.
+Path: c4h_agents/agents/types.py
+"""
+
 @dataclass 
 class AgentMetrics:
     """Standard metrics tracking for agent operations"""
@@ -78,6 +83,14 @@ class AgentMetrics:
     last_error: Optional[str] = None
     start_time: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     project: Optional[str] = None
+
+    def __getitem__(self, key: str) -> Any:
+        """Support dictionary-style access to attributes"""
+        return getattr(self, key)
+        
+    def __setitem__(self, key: str, value: Any) -> None:
+        """Support dictionary-style setting of attributes"""
+        setattr(self, key, value)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert metrics to plain dictionary for serialization"""

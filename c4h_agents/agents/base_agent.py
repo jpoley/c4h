@@ -1,11 +1,9 @@
 """
-Primary base agent implementation with core types and functionality.
+Primary base agent implementation with core functionality.
 Path: c4h_agents/agents/base_agent.py
 """
 
-from typing import Dict, Any, Optional, List, Tuple, Literal
-from enum import Enum
-from dataclasses import dataclass, field
+from typing import Dict, Any, Optional, List, Tuple
 import structlog
 import json
 from pathlib import Path
@@ -13,59 +11,19 @@ from datetime import datetime
 
 from c4h_agents.core.project import Project
 from c4h_agents.config import locate_keys
-from .types import LLMMessages
+from .types import (
+    LogDetail,
+    LLMProvider,
+    LLMMessages,
+    AgentInput,
+    AgentResponse,
+    AgentMetrics
+)
 from .base_config import BaseConfig, log_operation
 from .base_llm import BaseLLM
 
 logger = structlog.get_logger()
 
-class LogDetail(str, Enum):
-    """Log detail levels for agent operations"""
-    MINIMAL = "minimal"
-    BASIC = "basic"
-    DETAILED = "detailed" 
-    DEBUG = "debug"
-    
-    @classmethod
-    def from_str(cls, level: str) -> 'LogDetail':
-        try:
-            return cls(level.lower())
-        except ValueError:
-            return cls.BASIC
-
-class LLMProvider(str, Enum):
-    """Supported model providers"""
-    ANTHROPIC = "anthropic"
-    OPENAI = "openai"
-    GEMINI = "gemini"
-
-    def __str__(self) -> str:
-        """Safe string conversion ensuring no interpolation issues"""
-        return str(self.value)
-
-    def serialize(self) -> str:
-        """Safe serialization for logging and persistence"""
-        return f"provider_{self.value}"
-
-@dataclass
-class AgentInput:
-    """Complete input capture for agent operations"""
-    system_prompt: str = ""
-    user_message: str = ""
-    formatted_request: str = "" 
-    raw_context: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
-
-@dataclass
-class AgentResponse:
-    """Standard response format for all agents"""
-    success: bool
-    data: Dict[str, Any]
-    error: Optional[str] = None
-    llm_input: Optional[AgentInput] = None
-    raw_output: Optional[Any] = None
-    metrics: Optional[Dict[str, Any]] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
 class BaseAgent(BaseConfig, BaseLLM):
     """Base agent implementation"""
     
@@ -86,17 +44,10 @@ class BaseAgent(BaseConfig, BaseLLM):
         self.max_continuation_attempts = agent_config.get('max_continuation_attempts', 5)
         self.continuation_token_buffer = agent_config.get('continuation_token_buffer', 1000)
         
-        # Initialize metrics as dictionary for backward compatibility
-        self.metrics = {
-            "total_requests": 0,
-            "successful_requests": 0,
-            "failed_requests": 0,
-            "total_duration": 0.0,
-            "continuation_attempts": 0,
-            "last_error": None,
-            "start_time": datetime.utcnow().isoformat(),
-            "project": self.project.metadata.name if self.project else None
-        }
+        # Initialize metrics using AgentMetrics dataclass
+        self.metrics = AgentMetrics(
+            project=self.project.metadata.name if self.project else None
+        )
 
         # Set logging detail level from config
         log_level = self.config.get('logging', {}).get('agent_level', 'basic')
@@ -135,14 +86,8 @@ class BaseAgent(BaseConfig, BaseLLM):
         """Main process entry point"""
         return self._process(context)
 
-
-    """
-    Primary base agent implementation.
-    Path: c4h_agents/agents/base_agent.py
-    """
-
     def _process(self, context: Dict[str, Any]) -> AgentResponse:
-        """Internal synchronous implementation"""
+        """Internal synchronous implementation using consolidated types"""
         try:
             if self._should_log(LogDetail.DETAILED):
                 logger.info("agent.processing",
@@ -163,7 +108,7 @@ class BaseAgent(BaseConfig, BaseLLM):
                             system_length=len(system_message),
                             user_length=len(user_message))
             
-            # Create LLMMessages for response
+            # Create complete message set
             messages = LLMMessages(
                 system=system_message,
                 user=user_message,
@@ -171,38 +116,29 @@ class BaseAgent(BaseConfig, BaseLLM):
                 raw_context=context
             )
 
-            # Create LLM message format
-            llm_messages = [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
-            ]
-
-            if self._should_log(LogDetail.DEBUG):
-                logger.debug("agent.prompt_messages",
-                            system=llm_messages[0]["content"],
-                            user=llm_messages[1]["content"])
-
-            # Create input record with full prompts
+            # Create input record
             llm_input = AgentInput(
                 system_prompt=system_message,
                 user_message=user_message,
-                formatted_request=user_message,  # No need to reformat
+                formatted_request=user_message,
                 raw_context=context
             )
 
             try:
                 # Get LLM completion
-                content, raw_response = self._get_completion_with_continuation(llm_messages)
+                content, raw_response = self._get_completion_with_continuation([
+                    {"role": "system", "content": messages.system},
+                    {"role": "user", "content": messages.user}
+                ])
                 
                 # Process response with integrity checks
                 processed_data = self._process_response(content, raw_response)
-
+                
                 return AgentResponse(
                     success=True,
                     data=processed_data,
                     error=None,
                     messages=messages,
-                    llm_input=llm_input,
                     raw_output=raw_response,
                     metrics={"token_usage": getattr(raw_response, 'usage', {})}
                 )
@@ -213,10 +149,9 @@ class BaseAgent(BaseConfig, BaseLLM):
                     success=False,
                     data={},
                     error=f"LLM completion failed: {str(e)}",
-                    messages=messages,
-                    llm_input=llm_input
+                    messages=messages
                 )
-                    
+                
         except Exception as e:
             logger.error("process.failed", error=str(e))
             return AgentResponse(
