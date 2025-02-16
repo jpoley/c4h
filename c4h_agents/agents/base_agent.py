@@ -85,6 +85,10 @@ class BaseAgent(BaseConfig, BaseLLM):
         """Main process entry point"""
         return self._process(context)
 
+    """
+    Update _process method to include system prompt in context.
+    Path: c4h_agents/agents/base_agent.py
+    """
 
     def _process(self, context: Dict[str, Any]) -> AgentResponse:
         """Internal synchronous implementation"""
@@ -109,12 +113,21 @@ class BaseAgent(BaseConfig, BaseLLM):
                             user_length=len(user_message),
                             system=system_message)
             
-            # Create complete message set
+            # Enhance context with prompts for event storage
+            enhanced_context = {
+                **context,
+                "prompts": {
+                    "system": system_message,
+                    "user": user_message
+                }
+            }
+            
+            # Create message set with enhanced context
             messages = LLMMessages(
                 system=system_message,
                 user=user_message,
                 formatted_request=user_message,
-                raw_context=context
+                raw_context=enhanced_context  # Use enhanced context here
             )
 
             try:

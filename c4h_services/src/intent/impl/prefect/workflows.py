@@ -26,44 +26,34 @@ Store raw workflow event content.
 Path: c4h_services/src/intent/impl/prefect/workflows.py
 """
 
-def store_event(workflow_dir: Path, stage: str, event_num: str, content: Any, context: Dict[str, Any] = None) -> None:
-    """Store raw event content including complete prompts"""
+def store_event(workflow_dir: Path, stage: str, event_num: str, content: Any, context: Dict[str, Any]) -> None:
+    """Store complete event content including prompts and results"""
     try:
         event_file = workflow_dir / 'events' / f'{event_num}_{stage}.txt'
         with open(event_file, 'w', encoding='utf-8') as f:
             f.write(f'Timestamp: {datetime.now(timezone.utc).isoformat()}\n')
             f.write(f'Stage: {stage}\n\n')
-            
-            # Store complete LLM inputs
-            if hasattr(content, 'llm_input') and content.llm_input:
-                f.write('Complete Prompts:\n')
-                f.write('-' * 80 + '\n')
-                f.write('System Prompt (Persona):\n')
-                f.write(content.llm_input.system_prompt)
-                f.write('\n\nUser Request:\n')
-                f.write(content.llm_input.user_message)
-                f.write('\n' + '-' * 80 + '\n\n')
-            
-            # Store input context
+
+            # Write complete input including messages
             f.write('Input Context:\n')
-            f.write(str(context))
+            input_context = {
+                **context,
+                "prompts": content.get("input", {}).get("messages", {})
+            }
+            f.write(str(input_context))
             
-            # Store outputs
             f.write('\nOutput Content:\n')
-            if hasattr(content, 'raw_output') and content.raw_output:
-                f.write('Raw LLM Response:\n')
-                f.write(str(content.raw_output))
-            
-            f.write('\nProcessed Output:\n')
-            if hasattr(content, 'data'):
-                f.write(str(content.data))
-            else:
-                f.write(str(content))
-                
+            f.write(str(content.get("result_data", {})))
+
+            # Include raw output if available
+            if content.get("raw_output"):
+                f.write('\nRaw Output:\n')
+                f.write(str(content["raw_output"]))
+
             # Include metrics
-            if hasattr(content, 'metrics') and content.metrics:
-                f.write('\nExecution Metrics:\n')
-                f.write(str(content.metrics))
+            if content.get("metrics"):
+                f.write('\nMetrics:\n')
+                f.write(str(content["metrics"]))
                 
     except Exception as e:
         logger.error("workflow.storage.event_failed",
