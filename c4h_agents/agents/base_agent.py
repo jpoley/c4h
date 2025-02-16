@@ -15,7 +15,6 @@ from .types import (
     LogDetail,
     LLMProvider,
     LLMMessages,
-    AgentInput,
     AgentResponse,
     AgentMetrics
 )
@@ -86,8 +85,9 @@ class BaseAgent(BaseConfig, BaseLLM):
         """Main process entry point"""
         return self._process(context)
 
+
     def _process(self, context: Dict[str, Any]) -> AgentResponse:
-        """Internal synchronous implementation using consolidated types"""
+        """Internal synchronous implementation"""
         try:
             if self._should_log(LogDetail.DETAILED):
                 logger.info("agent.processing",
@@ -102,24 +102,17 @@ class BaseAgent(BaseConfig, BaseLLM):
             # Format user request once
             user_message = self._format_request(data)
             
-            # Log both messages at debug
+            # Log messages at debug with full system
             if self._should_log(LogDetail.DEBUG):
                 logger.debug("agent.messages",
                             system_length=len(system_message),
-                            user_length=len(user_message))
+                            user_length=len(user_message),
+                            system=system_message)
             
             # Create complete message set
             messages = LLMMessages(
                 system=system_message,
                 user=user_message,
-                formatted_request=user_message,
-                raw_context=context
-            )
-
-            # Create input record
-            llm_input = AgentInput(
-                system_prompt=system_message,
-                user_message=user_message,
                 formatted_request=user_message,
                 raw_context=context
             )
@@ -159,6 +152,7 @@ class BaseAgent(BaseConfig, BaseLLM):
                 data={}, 
                 error=str(e)
             )
+
 
     def _get_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Extract data from context with basic formatting"""

@@ -47,14 +47,14 @@ class LLMMessages:
     raw_context: Dict[str, Any]      # Original input context
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
-@dataclass
-class AgentInput:
-    """Complete input capture for agent operations"""
-    system_prompt: str = ""
-    user_message: str = ""
-    formatted_request: str = "" 
-    raw_context: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert messages to dictionary for logging"""
+        return {
+            "system": self.system,
+            "user": self.user,
+            "formatted_request": self.formatted_request,
+            "timestamp": self.timestamp.isoformat()
+        }
 
 @dataclass
 class AgentResponse:
