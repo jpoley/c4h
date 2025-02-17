@@ -111,7 +111,8 @@ class BaseAgent(BaseConfig, BaseLLM):
                 logger.debug("agent.messages",
                             system_length=len(system_message),
                             user_length=len(user_message),
-                            system=system_message)
+                            system=system_message,
+                            user_message=user_message)
             
             # Enhance context with prompts for event storage
             enhanced_context = {
