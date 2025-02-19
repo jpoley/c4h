@@ -42,6 +42,20 @@ class SlowItemIterator:
     def __iter__(self):
         return self
 
+    def _get_content_key(self, content: Dict[str, Any]) -> str:
+        """Get unique key for content based on full definition"""
+        try:
+            if isinstance(content, dict):
+                # Sort the content for consistent string representation
+                items = []
+                for k in sorted(content.keys()):
+                    items.append(f"{k}:{content[k]}")
+                return "|".join(items)
+            return str(content)
+        except Exception as e:
+            logger.error("iterator.key_generation_failed", error=str(e))
+            return str(content)
+
     def __next__(self) -> Any:
         """Get next item using lazy extraction"""
         logger.debug("slow_iterator.next_called", 
@@ -55,7 +69,7 @@ class SlowItemIterator:
 
         if self._position >= self._max_attempts:
             logger.warning("slow_iterator.max_attempts_reached",
-                         max_attempts=self._max_attempts)
+                        max_attempts=self._max_attempts)
             raise StopIteration
 
         try:
@@ -86,12 +100,12 @@ class SlowItemIterator:
                 self._current_attempt += 1
                 if self._current_attempt >= 3:  # Max retries per position
                     logger.error("slow_iterator.max_retries_for_position",
-                               position=self._position)
+                            position=self._position)
                     self._exhausted = True
                     raise StopIteration
                 logger.warning("slow_iterator.empty_response_retry",
-                             position=self._position,
-                             attempt=self._current_attempt)
+                            position=self._position,
+                            attempt=self._current_attempt)
                 return next(self)  # Retry this position
 
             # Handle completion signal
@@ -107,18 +121,23 @@ class SlowItemIterator:
                     parsed = json.loads(content)
                     content = parsed
                     logger.debug("slow_iterator.parsed_json",
-                               position=self._position)
+                            position=self._position)
                 except json.JSONDecodeError:
                     pass  # Keep as string if not JSON
 
-            # Check for duplicates
-            content_key = str(content)
+            # Generate content key using full content
+            content_key = self._get_content_key(content)
+            
+            # Check for duplicates using full content
             if content_key in self._returned_items:
                 logger.warning("slow_iterator.duplicate_item",
-                             position=self._position,
-                             content_preview=str(content)[:100])
-                self._exhausted = True
-                raise StopIteration
+                            position=self._position,
+                            content_preview=str(content)[:100])
+                self._current_attempt += 1
+                if self._current_attempt >= 3:
+                    self._exhausted = True
+                    raise StopIteration
+                return next(self)  # Try next position instead of stopping
 
             # Success - update state
             self._returned_items.add(content_key)
@@ -126,8 +145,8 @@ class SlowItemIterator:
             self._current_attempt = 0  # Reset attempt counter for next position
 
             logger.info("slow_iterator.item_extracted",
-                       position=self._position - 1,
-                       item_type=type(content).__name__)
+                    position=self._position - 1,
+                    item_type=type(content).__name__)
 
             return content
 
