@@ -11,6 +11,7 @@ from datetime import datetime
 
 from c4h_agents.core.project import Project
 from c4h_agents.config import locate_keys
+from .base_lineage import BaseLineage
 from .types import (
     LogDetail,
     LLMProvider,
@@ -85,11 +86,6 @@ class BaseAgent(BaseConfig, BaseLLM):
         """Main process entry point"""
         return self._process(context)
 
-    """
-    Update _process method to include system prompt in context.
-    Path: c4h_agents/agents/base_agent.py
-    """
-
     def _process(self, context: Dict[str, Any]) -> AgentResponse:
         """Internal synchronous implementation"""
         try:
@@ -141,6 +137,36 @@ class BaseAgent(BaseConfig, BaseLLM):
                 # Process response with integrity checks
                 processed_data = self._process_response(content, raw_response)
                 
+                # Track lineage if enabled - with safety check
+                if hasattr(self, 'lineage') and self.lineage:
+                     try:
+                        logger.debug("lineage.attempt_tracking",
+                                   agent=self._get_agent_name(),
+                                   has_context=bool(enhanced_context),
+                                   has_messages=bool(messages),
+                                   has_metrics=hasattr(raw_response, 'usage'))
+                                   
+                        self.lineage.track_llm_interaction(
+                            context=enhanced_context,
+                            messages=messages,
+                            response=raw_response,
+                            metrics={"token_usage": getattr(raw_response, 'usage', {})}
+                        )
+                        
+                        logger.info("lineage.tracking_complete",
+                                  agent=self._get_agent_name())
+                                  
+                     except Exception as e:
+                        logger.error("lineage.tracking_failed", 
+                                    error=str(e),
+                                    error_type=type(e).__name__,
+                                    agent=self._get_agent_name())
+                else:
+                    logger.debug("lineage.tracking_skipped",
+                               has_lineage=hasattr(self, 'lineage'),
+                               lineage_enabled=bool(getattr(self, 'lineage', None)),
+                               agent=self._get_agent_name())
+
                 return AgentResponse(
                     success=True,
                     data=processed_data,

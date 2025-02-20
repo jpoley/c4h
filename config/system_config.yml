@@ -1,4 +1,3 @@
-# Path: config/system_config.yml
 llm_config:
   providers:
     anthropic:
