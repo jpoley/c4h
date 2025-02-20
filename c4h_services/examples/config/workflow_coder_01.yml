@@ -1,4 +1,4 @@
-# Path: c4h_services/examples/config/workflow_coder_01.yml
+# Path: c4h_services/examples/config/lineage_test_workflow.yml
 
 # Project settings
 project_path: "./tests/test_projects/"  # Using test project
@@ -6,11 +6,14 @@ project_path: "./tests/test_projects/"  # Using test project
 # Intent description
 intent:
   description: |
-    Add logging to all functions:
+    Add logging to all functions with lineage tracking:
     - Replace print statements with logging
     - Add logging configuration
+    - Enable lineage tracking for observability
 
 llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-5-sonnet-20241022"
   agents:
     discovery:
       temperature: 0
@@ -21,8 +24,12 @@ llm_config:
     solution_designer:
       provider: "anthropic"
       model: "claude-3-5-sonnet-20241022"
+    coder:
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-20241022"
 
 runtime:
+  # Workflow storage configuration
   workflow:
     storage:
       enabled: true
@@ -34,8 +41,33 @@ runtime:
       error_handling:
         ignore_storage_errors: true
         log_level: "ERROR"
+        
+  # Lineage tracking configuration  
+  lineage:
+    enabled: true
+    namespace: "c4h_workflow"
+    backend:
+      type: "file"  # File-based storage is more reliable for initial testing
+      path: "./workspaces/lineage"  # Use explicit relative path
+    error_handling:
+      ignore_failures: true  # Don't let lineage errors affect workflow
+      log_level: "ERROR"
+    retention:
+      max_days: 30
+      max_runs: 100
+    # Context enrichment - always include these fields in lineage records  
+    context:
+      include_metrics: true
+      include_token_usage: true
+      record_timestamps: true
 
-# Backup settings
+# Backup settings  
 backup:
   enabled: true
-  path: "workspaces/backups"
+  path: "./workspaces/backups"  # Use explicit relative path
+
+# Logging settings
+logging:
+  level: "DEBUG"
+  format: "structured"
+  agent_level: "DEBUG"

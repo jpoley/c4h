@@ -162,6 +162,11 @@ def load_configs(app_config_path: str, system_config_paths: Optional[List[str]] 
         logger.error("config.load_failed", error=str(e))
         raise
 
+"""
+Path: c4h_services/examples/prefect_runner.py
+Update to ensure lineage configuration is properly propagated in the run_flow function
+"""
+
 @flow(name="prefect_runner")
 def run_flow(
     mode: RunMode,
@@ -186,6 +191,37 @@ def run_flow(
                 logger.info("runner.project.paths",
                     project_path=str(project_path),
                     workspace_root=project_config.get('workspace_root'))
+        
+        # Prepare context with workflow run ID for lineage tracking
+        context = {"input_data": config.get("input_data", {})}
+        
+        # Add project context if available
+        if 'project' in config:
+            context['project'] = config['project']
+            
+        # Ensure runtime configuration is properly set
+        if 'runtime' in config:
+            runtime_config = config['runtime']
+            if 'lineage' in runtime_config:
+                lineage_config = runtime_config['lineage']
+                # If lineage is enabled but no workflow_id is specified, use flow_run_id
+                if lineage_config.get('enabled', False):
+                    flow_id = None
+                    try:
+                        from prefect.runtime import flow_run
+                        flow_id = flow_run.get_id()
+                    except Exception:
+                        # Fallback if prefect runtime not available
+                        pass
+                        
+                    if flow_id:
+                        context['workflow_run_id'] = str(flow_id)
+                        logger.info("lineage.context_enhanced",
+                                  workflow_run_id=context['workflow_run_id'])
+            
+        # Add any extra parameters
+        if extra_params:
+            context.update(extra_params)
 
         if mode == RunMode.AGENT:
             if not agent_type or agent_type not in AGENT_REGISTRY:
@@ -193,14 +229,6 @@ def run_flow(
                 
             # Run single agent
             task_config = AGENT_REGISTRY[agent_type](config)
-            context = {"input_data": config.get("input_data", {})}
-            
-            # Add project context if available
-            if 'project' in config:
-                context['project'] = config['project']
-                
-            if extra_params:
-                context.update(extra_params)
                 
             result = run_agent_task(
                 agent_config=task_config,

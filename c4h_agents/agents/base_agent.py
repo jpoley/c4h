@@ -1,6 +1,6 @@
 """
-Primary base agent implementation with core functionality.
 Path: c4h_agents/agents/base_agent.py
+Update to initialize lineage tracking in BaseAgent class
 """
 
 from typing import Dict, Any, Optional, List, Tuple
@@ -75,6 +75,23 @@ class BaseAgent(BaseConfig, BaseLLM):
             
         self.logger = structlog.get_logger().bind(**log_context)
         
+        # Initialize lineage tracking if configured
+        self.lineage = None
+        lineage_config = self.config.get('runtime', {}).get('lineage', {})
+        if lineage_config.get('enabled', False):
+            try:
+                self.lineage = BaseLineage(
+                    namespace=lineage_config.get('namespace', 'c4h_agents'),
+                    agent_name=self._get_agent_name(),
+                    config=self.config
+                )
+                logger.info(f"{self._get_agent_name()}.lineage_initialized", 
+                           enabled=True,
+                           namespace=lineage_config.get('namespace', 'c4h_agents'))
+            except Exception as e:
+                logger.error(f"{self._get_agent_name()}.lineage_init_failed", 
+                           error=str(e))
+        
         logger.info(f"{self._get_agent_name()}.initialized", 
                    continuation_settings={
                        "max_attempts": self.max_continuation_attempts,
@@ -86,8 +103,13 @@ class BaseAgent(BaseConfig, BaseLLM):
         """Main process entry point"""
         return self._process(context)
 
+    """
+    Path: c4h_agents/agents/base_agent.py
+    Update to the _process method to ensure proper lineage tracking
+    """
+
     def _process(self, context: Dict[str, Any]) -> AgentResponse:
-        """Internal synchronous implementation"""
+        """Internal synchronous implementation with robust lineage tracking"""
         try:
             if self._should_log(LogDetail.DETAILED):
                 logger.info("agent.processing",
@@ -107,8 +129,8 @@ class BaseAgent(BaseConfig, BaseLLM):
                 logger.debug("agent.messages",
                             system_length=len(system_message),
                             user_length=len(user_message),
-                            system=system_message,
-                            user_message=user_message)
+                            system=system_message[:500] + "..." if len(system_message) > 500 else system_message,
+                            user_message=user_message[:500] + "..." if len(user_message) > 500 else user_message)
             
             # Enhance context with prompts for event storage
             enhanced_context = {
@@ -119,6 +141,12 @@ class BaseAgent(BaseConfig, BaseLLM):
                 }
             }
             
+            # Extract workflow ID if present for lineage tracking
+            workflow_run_id = context.get('workflow_run_id')
+            if workflow_run_id:
+                enhanced_context['workflow_run_id'] = workflow_run_id
+                logger.debug("lineage.workflow_id_found", workflow_run_id=workflow_run_id)
+                
             # Create message set with enhanced context
             messages = LLMMessages(
                 system=system_message,
@@ -128,6 +156,18 @@ class BaseAgent(BaseConfig, BaseLLM):
             )
 
             try:
+                # Track lineage start event if enabled
+                lineage_enabled = hasattr(self, 'lineage') and self.lineage and getattr(self.lineage, 'enabled', False)
+                if lineage_enabled:
+                    try:
+                        logger.debug("lineage.start_tracking", agent=self._get_agent_name())
+                        if hasattr(self.lineage, 'emit_start'):
+                            self.lineage.emit_start(enhanced_context)
+                    except Exception as e:
+                        logger.error("lineage.start_tracking_failed", 
+                                    error=str(e),
+                                    agent=self._get_agent_name())
+                
                 # Get LLM completion
                 content, raw_response = self._get_completion_with_continuation([
                     {"role": "system", "content": messages.system},
@@ -137,35 +177,45 @@ class BaseAgent(BaseConfig, BaseLLM):
                 # Process response with integrity checks
                 processed_data = self._process_response(content, raw_response)
                 
-                # Track lineage if enabled - with safety check
-                if hasattr(self, 'lineage') and self.lineage:
-                     try:
-                        logger.debug("lineage.attempt_tracking",
-                                   agent=self._get_agent_name(),
-                                   has_context=bool(enhanced_context),
-                                   has_messages=bool(messages),
-                                   has_metrics=hasattr(raw_response, 'usage'))
-                                   
-                        self.lineage.track_llm_interaction(
-                            context=enhanced_context,
-                            messages=messages,
-                            response=raw_response,
-                            metrics={"token_usage": getattr(raw_response, 'usage', {})}
-                        )
+                # Track lineage completion if enabled
+                if lineage_enabled:
+                    try:
+                        logger.debug("lineage.tracking_attempt",
+                                agent=self._get_agent_name(),
+                                has_context=bool(enhanced_context),
+                                has_messages=bool(messages),
+                                has_metrics=hasattr(raw_response, 'usage'))
+                                
+                        # Use either track_llm_interaction or emit_complete
+                        if hasattr(self.lineage, 'track_llm_interaction'):
+                            self.lineage.track_llm_interaction(
+                                context=enhanced_context,
+                                messages=messages,
+                                response=raw_response,
+                                metrics={"token_usage": getattr(raw_response, 'usage', {})}
+                            )
+                        elif hasattr(self.lineage, 'emit_complete'):
+                            self.lineage.emit_complete(
+                                context=enhanced_context,
+                                result={
+                                    "processed_data": processed_data,
+                                    "metrics": {"token_usage": getattr(raw_response, 'usage', {})}
+                                }
+                            )
                         
                         logger.info("lineage.tracking_complete",
-                                  agent=self._get_agent_name())
-                                  
-                     except Exception as e:
+                                agent=self._get_agent_name())
+                                
+                    except Exception as e:
                         logger.error("lineage.tracking_failed", 
                                     error=str(e),
                                     error_type=type(e).__name__,
                                     agent=self._get_agent_name())
                 else:
                     logger.debug("lineage.tracking_skipped",
-                               has_lineage=hasattr(self, 'lineage'),
-                               lineage_enabled=bool(getattr(self, 'lineage', None)),
-                               agent=self._get_agent_name())
+                            has_lineage=hasattr(self, 'lineage'),
+                            lineage_enabled=getattr(self.lineage, 'enabled', False) if hasattr(self, 'lineage') else False,
+                            agent=self._get_agent_name())
 
                 return AgentResponse(
                     success=True,
@@ -177,6 +227,14 @@ class BaseAgent(BaseConfig, BaseLLM):
                 )
                 
             except Exception as e:
+                # Track lineage failure if enabled
+                if lineage_enabled and hasattr(self.lineage, 'emit_failed'):
+                    try:
+                        self.lineage.emit_failed(enhanced_context, str(e))
+                    except Exception as lineage_error:
+                        logger.error("lineage.failure_tracking_failed", 
+                                    error=str(lineage_error))
+                        
                 logger.error("llm.completion_failed", error=str(e))
                 return AgentResponse(
                     success=False,
@@ -192,7 +250,6 @@ class BaseAgent(BaseConfig, BaseLLM):
                 data={}, 
                 error=str(e)
             )
-
 
     def _get_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Extract data from context with basic formatting"""
