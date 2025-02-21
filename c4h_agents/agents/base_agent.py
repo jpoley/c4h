@@ -104,7 +104,7 @@ class BaseAgent(BaseConfig, BaseLLM):
         return self._process(context)
 
     """
-    Path: c4h_agents/agents/base_agent.py
+    Path: c4h_agents/agents/base_agent.py 
     Update to the _process method to ensure proper lineage tracking
     """
 

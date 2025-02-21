@@ -1,6 +1,6 @@
 """
-Configuration and project management for agent implementations.
 Path: c4h_agents/agents/base_config.py
+Configuration management for agent implementations following design principles.
 """
 
 from typing import Dict, Any, Optional, List, Union
@@ -62,6 +62,31 @@ class BaseConfig:
             "start_time": datetime.utcnow().isoformat(),
             "project": self.project.metadata.name if self.project else None
         }
+
+    def _get_runtime_config(self) -> Dict[str, Any]:
+        """Get runtime configuration with proper inheritance"""
+        runtime_config = locate_config(self.config, "runtime")
+        if not runtime_config:
+            logger.debug("config.no_runtime_found",
+                        agent=self._get_agent_name())
+            return {}
+            
+        logger.debug("config.runtime_loaded",
+                    agent=self._get_agent_name(),
+                    config_keys=list(runtime_config.keys()))
+        return runtime_config
+
+    def _get_lineage_config(self) -> Dict[str, Any]:
+        """Get lineage configuration respecting hierarchy"""
+        runtime_config = self._get_runtime_config()
+        lineage_config = runtime_config.get('lineage', {})
+        
+        logger.debug("config.lineage_loaded",
+                    agent=self._get_agent_name(),
+                    enabled=lineage_config.get('enabled', False),
+                    config_keys=list(lineage_config.keys()))
+                    
+        return lineage_config
 
     def _get_provider_config(self, provider: LLMProvider) -> Dict[str, Any]:
         """Get provider configuration from merged config."""
@@ -205,49 +230,6 @@ class BaseConfig:
                         provider=self.provider.value if hasattr(self, 'provider') else None)
             raise
 
-    def _get_model_str(self) -> str:
-        """Get the appropriate model string for the provider"""
-        if self.provider == LLMProvider.OPENAI:
-            return self.model
-        elif self.provider == LLMProvider.ANTHROPIC:
-            return f"anthropic/{self.model}"
-        elif self.provider == LLMProvider.GEMINI:
-            return f"google/{self.model}"
-        else:
-            return f"{self.provider.value}/{self.model}"
-
-    def ensure_paths(self) -> None:
-        """Ensure required project paths exist"""
-        if not self.project:
-            return
-            
-        try:
-            # Create standard paths if they don't exist
-            self.project.paths.workspace.mkdir(parents=True, exist_ok=True)
-            self.project.paths.output.mkdir(parents=True, exist_ok=True)
-            
-            # Log path status
-            logger.debug("agent.paths_validated",
-                        workspace=str(self.project.paths.workspace),
-                        output=str(self.project.paths.output))
-                        
-        except Exception as e:
-            logger.error("agent.path_validation_failed",
-                        error=str(e))
-        
-    def resolve_path(self, path: Union[str, Path]) -> Path:
-        """Resolve path using project context if available"""
-        path = Path(path)
-        if self.project:
-            return self.project.resolve_path(path)
-        return path.resolve()
-        
-    def get_relative_path(self, path: Union[str, Path]) -> Path:
-        """Get path relative to project root if available"""
-        if self.project:
-            return self.project.get_relative_path(Path(path))
-        return Path(path)
-
     def _should_log(self, level: LogDetail) -> bool:
         """Check if should log at this level"""
         log_levels = {
@@ -273,19 +255,6 @@ class BaseConfig:
                        metrics=self.metrics,
                        duration=duration,
                        success=success)
-
-    def _get_system_message(self) -> str:
-        """Get system message from config"""
-        return self.config.get("llm_config", {}).get("agents", {}).get(
-            self._get_agent_name(), {}).get("prompts", {}).get("system", "")
-
-    def _get_prompt(self, prompt_type: str) -> str:
-        """Get prompt template by type"""
-        prompts = self.config.get("llm_config", {}).get("agents", {}).get(
-            self._get_agent_name(), {}).get("prompts", {})
-        if prompt_type not in prompts:
-            raise ValueError(f"No prompt template found for type: {prompt_type}")
-        return prompts[prompt_type]
 
     def _get_agent_name(self) -> str:
         """Get agent name for config lookup"""
