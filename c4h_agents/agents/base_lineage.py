@@ -7,11 +7,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 from pathlib import Path
+from config import locate_config
 import json
 import uuid
 import structlog
 import os
-import traceback
 
 # Try importing OpenLineage, but don't fail if it's not available
 try:
@@ -38,7 +38,7 @@ class LineageEvent:
     error: Optional[str] = None
 
 class BaseLineage:
-    """OpenLineage tracking implementation using existing workflow event storage"""
+    """OpenLineage tracking implementation"""
 
     def __init__(self, namespace: str, agent_name: str, config: Dict[str, Any]):
         """Initialize lineage tracking"""
@@ -46,100 +46,82 @@ class BaseLineage:
         self.agent_name = agent_name
         self.run_id = str(uuid.uuid4())
         
-        # Extract lineage config with proper fallbacks
-        runtime_config = config.get('runtime', {})
-        self.config = runtime_config.get('lineage', {})
+        # BaseLineage owns finding its own config
+        lineage_config = locate_config(config or {}, "lineage")
         
-        # Use workflow storage config as fallback
-        workflow_config = runtime_config.get('workflow', {}).get('storage', {})
-        
-        # Determine if lineage is enabled
-        self.enabled = self.config.get('enabled', False)
+        # Set config with minimal required defaults
+        self.config = {
+            "enabled": lineage_config.get("enabled", False),
+            "namespace": lineage_config.get("namespace", "c4h_agents"),
+            "backend": lineage_config.get("backend", {
+                "type": "file",
+                "path": "workspaces/lineage"
+            }),
+            "context": lineage_config.get("context", {
+                "include_metrics": True,
+                "include_token_usage": True,
+                "record_timestamps": True
+            })
+        }
         
         # Early exit if not enabled
+        self.enabled = self.config["enabled"]
         if not self.enabled:
-            logger.info("lineage.disabled", agent=agent_name)
+            logger.info(f"{agent_name}.lineage_disabled")
             return
             
-        # Configure backend with robust error handling
-        self.client = None
-        self.lineage_dir = None
-        
+        # Initialize storage backend
         try:
-            backend = self.config.get('backend', {})
-            backend_type = backend.get('type', 'file')
+            backend = self.config["backend"]
+            backend_type = backend.get("type", "file")
             
-            if backend_type == 'marquez' and OPENLINEAGE_AVAILABLE:
-                try:
-                    marquez_url = backend.get('url')
-                    if not marquez_url:
-                        logger.error("lineage.marquez_url_missing")
-                        self.enabled = False
-                        return
-                    self.client = OpenLineageClient(url=marquez_url)
-                    logger.info("lineage.marquez_initialized", url=marquez_url)
-                except Exception as e:
-                    logger.error("lineage.marquez_init_failed", error=str(e))
-                    self.enabled = False
-                    return
+            if backend_type == "marquez" and OPENLINEAGE_AVAILABLE:
+                self._init_marquez_backend(backend)
             else:
-                # Use file-based storage, preferring lineage path but falling back to workflow storage
-                try:
-                    # Determine storage path - prefer lineage config but fall back to workflow storage
-                    lineage_path = (
-                        backend.get('path') or 
-                        workflow_config.get('root_dir') or 
-                        'workspaces/lineage'
-                    )
-                    self.lineage_dir = Path(lineage_path)
-                    
-                    # Ensure directory exists and is writable
-                    self.lineage_dir.mkdir(parents=True, exist_ok=True)
-                    if not os.access(self.lineage_dir, os.W_OK):
-                        logger.error("lineage.dir_not_writable", path=str(self.lineage_dir))
-                        self.enabled = False
-                        return
-                        
-                    # Create date-based directory structure - reuse workflow pattern
-                    date_dir = datetime.now().strftime('%Y%m%d')
-                    self.lineage_dir = self.lineage_dir / date_dir
-                    self.lineage_dir.mkdir(parents=True, exist_ok=True)
-                    
-                    logger.info("lineage.file_storage_initialized", 
-                              path=str(self.lineage_dir))
-                    
-                except Exception as e:
-                    logger.error("lineage.file_backend_failed", 
-                                error=str(e),
-                                traceback=traceback.format_exc())
-                    self.enabled = False
-                    return
-                    
-            # Set producer information if using OpenLineage
-            if OPENLINEAGE_AVAILABLE:
-                try:
-                    set_producer('c4h_agents', agent_name)
-                except Exception as e:
-                    logger.warning("lineage.producer_set_failed", error=str(e))
-            
-            logger.info("lineage.initialized",
-                        namespace=namespace,
-                        agent=agent_name,
-                        run_id=self.run_id,
-                        backend_type=backend.get('type', 'file'),
-                        enabled=self.enabled)
-                        
+                self._init_file_backend(backend)
+                
+            logger.info(f"{agent_name}.lineage_initialized",
+                       backend=backend_type,
+                       enabled=True)
+                       
         except Exception as e:
-            logger.error("lineage.init_failed", 
-                        error=str(e),
-                        traceback=traceback.format_exc())
+            logger.error(f"{agent_name}.lineage_init_failed",
+                        error=str(e))
             self.enabled = False
 
+    def _init_file_backend(self, backend: Dict[str, Any]) -> None:
+        """Initialize file-based storage backend"""
+        storage_path = Path(backend.get("path", "workspaces/lineage"))
+        
+        # Create base directory
+        storage_path.mkdir(parents=True, exist_ok=True)
+        if not os.access(storage_path, os.W_OK):
+            raise ValueError(f"Lineage directory not writable: {storage_path}")
+            
+        # Create date-based structure
+        date_dir = datetime.now().strftime('%Y%m%d')
+        self.lineage_dir = storage_path / date_dir
+        self.lineage_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info("lineage.file_storage_initialized", 
+                   path=str(self.lineage_dir))
+
+    def _init_marquez_backend(self, backend: Dict[str, Any]) -> None:
+        """Initialize OpenLineage/Marquez backend"""
+        marquez_url = backend.get("url")
+        if not marquez_url:
+            raise ValueError("Marquez URL required for OpenLineage backend")
+            
+        self.client = OpenLineageClient(url=marquez_url)
+        set_producer("c4h_agents", self.agent_name)
+        
+        logger.info("lineage.marquez_initialized", url=marquez_url)
+
     def track_llm_interaction(self,
-                             context: Dict[str, Any],
-                             messages: LLMMessages,
-                             response: Any,
-                             metrics: Optional[Dict] = None) -> None:
+                            context: Dict[str, Any],
+                            messages: LLMMessages,
+                            response: Any,
+                            metrics: Optional[Dict] = None) -> None:
         """Track complete LLM interaction"""
         if not self.enabled:
             logger.debug("lineage.tracking_skipped", enabled=False)
@@ -156,23 +138,17 @@ class BaseLineage:
             )
             
             # Route to appropriate backend
-            if self.client:
+            if hasattr(self, 'client'):
                 self._emit_marquez_event(event)
             else:
                 self._write_file_event(event)
                 
         except Exception as e:
-            error_details = {
-                "error": str(e),
-                "agent": self.agent_name,
-                "enabled": self.enabled,
-                "has_client": bool(self.client),
-                "lineage_dir": str(self.lineage_dir) if self.lineage_dir else None
-            }
-            logger.error("lineage.track_failed", **error_details)
+            logger.error("lineage.track_failed", 
+                        error=str(e),
+                        agent=self.agent_name)
             
-            # Only raise if configured to do so
-            if not self.config.get('error_handling', {}).get('ignore_failures', True):
+            if not self.config.get("error_handling", {}).get("ignore_failures", True):
                 raise
 
     def _emit_marquez_event(self, event: LineageEvent) -> None:

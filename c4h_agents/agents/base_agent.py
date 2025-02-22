@@ -75,29 +75,23 @@ class BaseAgent(BaseConfig, BaseLLM):
             
         self.logger = structlog.get_logger().bind(**log_context)
         
-        # Initialize lineage tracking if configured
         self.lineage = None
-        lineage_config = self.config.get('runtime', {}).get('lineage', {})
-        if lineage_config.get('enabled', False):
-            try:
-                self.lineage = BaseLineage(
-                    namespace=lineage_config.get('namespace', 'c4h_agents'),
-                    agent_name=self._get_agent_name(),
-                    config=self.config
-                )
-                logger.info(f"{self._get_agent_name()}.lineage_initialized", 
-                           enabled=True,
-                           namespace=lineage_config.get('namespace', 'c4h_agents'))
-            except Exception as e:
-                logger.error(f"{self._get_agent_name()}.lineage_init_failed", 
-                           error=str(e))
-        
+        try:
+            self.lineage = BaseLineage(
+                namespace="c4h_agents",  # Default namespace
+                agent_name=self._get_agent_name(),
+                config=self.config  # Pass full config, let BaseLineage find what it needs
+            )
+        except Exception as e:
+            logger.error(f"{self._get_agent_name()}.lineage_init_failed", 
+                        error=str(e))
+
         logger.info(f"{self._get_agent_name()}.initialized", 
-                   continuation_settings={
-                       "max_attempts": self.max_continuation_attempts,
-                       "token_buffer": self.continuation_token_buffer
-                   },
-                   **log_context)
+                continuation_settings={
+                    "max_attempts": self.max_continuation_attempts,
+                    "token_buffer": self.continuation_token_buffer
+                },
+                **log_context)
 
     def process(self, context: Dict[str, Any]) -> AgentResponse:
         """Main process entry point"""
