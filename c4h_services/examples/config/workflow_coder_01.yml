@@ -48,7 +48,7 @@ runtime:
     namespace: "c4h_workflow"
     backend:
       type: "file"  # File-based storage is more reliable for initial testing
-      path: "./workspaces/lineage"  # Use explicit relative path
+      path: "workspaces/lineage"  # Use explicit relative path
     error_handling:
       ignore_failures: true  # Don't let lineage errors affect workflow
       log_level: "ERROR"
