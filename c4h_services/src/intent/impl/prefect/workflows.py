@@ -112,6 +112,11 @@ def run_basic_workflow(
     flow_logger = get_run_logger()
     flow_logger.info("Starting basic refactoring workflow")
     
+    # Get Prefect flow run ID and add to config for other components to pick up like base_agent
+    if 'runtime' not in config:
+        config['runtime'] = {}
+    config['runtime']['run_id'] = flow_run.get_id()
+
     # Initialize workflow storage
     workflow_dir = get_workflow_storage(config)
     if workflow_dir:

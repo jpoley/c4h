@@ -37,56 +37,69 @@ class LineageEvent:
     parent_run_id: Optional[str] = None
     error: Optional[str] = None
 
-class BaseLineage:
-    """OpenLineage tracking implementation"""
+@dataclass
+class LineageEvent:
+    """Complete lineage event for LLM interaction"""
+    input_context: Dict[str, Any]
+    messages: LLMMessages
+    raw_output: Any
+    metrics: Optional[Dict] = None
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    parent_run_id: Optional[str] = None
+    error: Optional[str] = None
 
+class BaseLineage:
+
+    """OpenLineage tracking implementation"""
     def __init__(self, namespace: str, agent_name: str, config: Dict[str, Any]):
         """Initialize lineage tracking"""
-        self.namespace = namespace
+        self.namespace = namespace  # Store namespace
         self.agent_name = agent_name
-        self.run_id = str(uuid.uuid4())
+        self.enabled = False
         
-        # BaseLineage owns finding its own config
+        # Get lineage config first
         lineage_config = locate_config(config or {}, "lineage")
-        
+        if not lineage_config:
+            logger.info(f"{agent_name}.lineage_disabled", reason="no_config")
+            return
+            
+        # Get run ID from runtime config 
+        self.run_id = config.get('runtime', {}).get('run_id')
+        if not self.run_id:
+            self.run_id = str(uuid.uuid4())
+            logger.warning("lineage.missing_run_id", generated_id=self.run_id)
+
         # Set config with minimal required defaults
         self.config = {
             "enabled": lineage_config.get("enabled", False),
-            "namespace": lineage_config.get("namespace", "c4h_agents"),
+            "namespace": lineage_config.get("namespace", self.namespace),  # Use passed namespace as default
             "backend": lineage_config.get("backend", {
                 "type": "file",
                 "path": "workspaces/lineage"
-            }),
-            "context": lineage_config.get("context", {
-                "include_metrics": True,
-                "include_token_usage": True,
-                "record_timestamps": True
             })
         }
         
-        # Early exit if not enabled
         self.enabled = self.config["enabled"]
         if not self.enabled:
-            logger.info(f"{agent_name}.lineage_disabled")
+            logger.info(f"{agent_name}.lineage_disabled", reason="not_enabled")
             return
-            
-        # Initialize storage backend
+
+        # Setup storage directory
         try:
-            backend = self.config["backend"]
-            backend_type = backend.get("type", "file")
+            base_dir = Path(self.config["backend"]["path"])
+            date_str = datetime.now().strftime('%Y%m%d')
+            self.lineage_dir = base_dir / date_str / self.run_id
+            self.lineage_dir.mkdir(parents=True, exist_ok=True)
             
-            if backend_type == "marquez" and OPENLINEAGE_AVAILABLE:
-                self._init_marquez_backend(backend)
-            else:
-                self._init_file_backend(backend)
-                
-            logger.info(f"{agent_name}.lineage_initialized",
-                       backend=backend_type,
-                       enabled=True)
-                       
+            # Create directories under run_id
+            (self.lineage_dir / "events").mkdir(exist_ok=True)
+            (self.lineage_dir / "errors").mkdir(exist_ok=True)
+            
+            logger.info("lineage.storage_initialized",
+                       path=str(self.lineage_dir),
+                       run_id=self.run_id)
         except Exception as e:
-            logger.error(f"{agent_name}.lineage_init_failed",
-                        error=str(e))
+            logger.error("lineage.storage_init_failed", error=str(e))
             self.enabled = False
 
     def _init_file_backend(self, backend: Dict[str, Any]) -> None:
@@ -188,37 +201,81 @@ class BaseLineage:
         except Exception as e:
             logger.error("lineage.marquez_event_failed", error=str(e))
 
+    def _serialize_metrics(self, metrics: Dict[str, Any]) -> Dict[str, Any]:
+        """Serialize metrics ensuring all objects are JSON serializable"""
+        if not metrics:
+            return {}
+            
+        serialized = {}
+        for key, value in metrics.items():
+            if key == 'token_usage' and hasattr(value, 'completion_tokens'):
+                # Handle LiteLLM Usage objects
+                serialized[key] = {
+                    'completion_tokens': getattr(value, 'completion_tokens', 0),
+                    'prompt_tokens': getattr(value, 'prompt_tokens', 0),
+                    'total_tokens': getattr(value, 'total_tokens', 0)
+                }
+            elif isinstance(value, (int, float, str, bool)):
+                serialized[key] = value
+            elif isinstance(value, (list, dict)):
+                serialized[key] = json.dumps(value)
+            else:
+                # Handle other non-serializable objects
+                serialized[key] = str(value)
+        
+        return serialized
+
+    def _serialize_messages(self, messages: LLMMessages) -> Dict[str, Any]:
+        """Safely serialize messages for storage"""
+        if not messages:
+            return {}
+            
+        return {
+            "system": messages.system,
+            "user": messages.user,
+            "formatted_request": messages.formatted_request,
+            "timestamp": messages.timestamp.isoformat()
+        }
+
+    def _serialize_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Safely serialize context objects"""
+        serialized = {}
+        for key, value in context.items():
+            if isinstance(value, (int, float, str, bool)):
+                serialized[key] = value
+            elif isinstance(value, (list, dict)):
+                serialized[key] = json.dumps(value)
+            elif hasattr(value, 'to_dict'):  # Handle objects with to_dict method
+                serialized[key] = value.to_dict()
+            else:
+                serialized[key] = str(value)  # Fallback for other types
+        return serialized
+
     def _write_file_event(self, event: LineageEvent) -> None:
-        """Write event to file system reusing workflow storage pattern"""
+        """Write event to file system with proper serialization"""
         if not self.enabled or not self.lineage_dir:
-            logger.debug("lineage.file_write_skipped", enabled=self.enabled)
             return
             
         try:
-            # Create run directory using workflow pattern
-            run_dir = self.lineage_dir / self.run_id
-            run_dir.mkdir(parents=True, exist_ok=True)
-            events_dir = run_dir / "events"
-            events_dir.mkdir(exist_ok=True)
-            
-            # Generate unique event filename
             event_id = uuid.uuid4()
+            events_dir = self.lineage_dir / "events"
             event_file = events_dir / f"{event_id}.json"
             temp_file = events_dir / f"{event_id}.tmp"
             
-            # Write event data atomically using temporary file
+            event_data = {
+                "timestamp": event.timestamp.isoformat(),
+                "agent": self.agent_name,
+                "input_context": self._serialize_context(event.input_context),
+                "messages": self._serialize_messages(event.messages),
+                "metrics": self._serialize_metrics(event.metrics),
+                "run_id": self.run_id,
+                "parent_run_id": event.parent_run_id,
+                "error": event.error
+            }
+
             with open(temp_file, 'w') as f:
-                json.dump({
-                    "timestamp": event.timestamp.isoformat(),
-                    "agent": self.agent_name,
-                    "input_context": event.input_context,
-                    "messages": event.messages.to_dict(),
-                    "metrics": event.metrics,
-                    "parent_run_id": event.parent_run_id,
-                    "error": event.error
-                }, f, indent=2)
+                json.dump(event_data, f, indent=2)
                     
-            # Atomic rename to final filename
             temp_file.rename(event_file)
             
             logger.info("lineage.event_saved", 
@@ -229,18 +286,16 @@ class BaseLineage:
         except Exception as e:
             error_details = {
                 "error": str(e),
-                "lineage_dir": str(self.lineage_dir) if self.lineage_dir else None,
+                "lineage_dir": str(self.lineage_dir),
                 "agent": self.agent_name,
-                "run_id": self.run_id
+                "run_id": self.run_id,
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             logger.error("lineage.write_failed", **error_details)
             
-            # Attempt to log error but don't propagate
             try:
-                errors_dir = Path('workspaces/lineage/errors')
-                errors_dir.mkdir(parents=True, exist_ok=True)
-                error_file = errors_dir / f"error_{uuid.uuid4()}.json"
+                error_file = self.lineage_dir / "errors" / f"error_{uuid.uuid4()}.json"
                 with open(error_file, 'w') as f:
                     json.dump(error_details, f, indent=2)
             except:
-                pass # Swallow errors in error logging
+                pass
