@@ -1,17 +1,17 @@
 """
-Raw workflow event storage with robust project handling.
 Path: c4h_services/src/intent/impl/prefect/workflows.py
+Core workflow implementation with proper run ID propagation.
 """
 
 from prefect import flow, get_run_logger
 from prefect.runtime import flow_run
-from prefect.states import Completed, Failed
 from typing import Dict, Any, Optional
 import structlog
 from pathlib import Path
 from datetime import datetime, timezone
-from uuid import uuid4
+from copy import deepcopy
 
+from c4h_agents.core.project import Project
 from .tasks import run_agent_task
 from .factories import (
     create_discovery_task,
@@ -21,88 +21,64 @@ from .factories import (
 
 logger = structlog.get_logger()
 
-"""
-Store raw workflow event content.
-Path: c4h_services/src/intent/impl/prefect/workflows.py
-"""
-
-def store_event(workflow_dir: Path, stage: str, event_num: str, content: Any, context: Dict[str, Any]) -> None:
-    """Store complete event content including prompts and results"""
+def prepare_workflow_config(base_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Prepare workflow configuration with proper run ID and context"""
     try:
-        event_file = workflow_dir / 'events' / f'{event_num}_{stage}.txt'
-        with open(event_file, 'w', encoding='utf-8') as f:
-            f.write(f'Timestamp: {datetime.now(timezone.utc).isoformat()}\n')
-            f.write(f'Stage: {stage}\n\n')
-
-            # Write complete input including messages
-            f.write('Input Context:\n')
-            input_context = {
-                **context,
-                "prompts": content.get("input", {}).get("messages", {})
-            }
-            f.write(str(input_context))
+        # Get workflow run ID from Prefect
+        workflow_id = str(flow_run.get_id())
+        
+        # Deep copy to avoid mutations
+        config = deepcopy(base_config)
+        
+        # Add runtime config following hierarchy
+        if 'runtime' not in config:
+            config['runtime'] = {}
             
-            f.write('\nOutput Content:\n')
-            f.write(str(content.get("result_data", {})))
-
-            # Include raw output if available
-            if content.get("raw_output"):
-                f.write('\nRaw Output:\n')
-                f.write(str(content["raw_output"]))
-
-            # Include metrics
-            if content.get("metrics"):
-                f.write('\nMetrics:\n')
-                f.write(str(content["metrics"]))
-                
+        config['runtime'].update({
+            'workflow_run_id': workflow_id,  # Primary workflow ID
+            'run_id': workflow_id,          # Legacy support
+            'workflow': {
+                'id': workflow_id,
+                'start_time': datetime.now(timezone.utc).isoformat()
+            }
+        })
+        
+        logger.debug("workflow.config_prepared",
+            workflow_id=workflow_id,
+            config_keys=list(config.keys()))
+            
+        return config
+        
     except Exception as e:
-        logger.error("workflow.storage.event_failed",
-                    stage=stage,
-                    error=str(e))
+        logger.error("workflow.config_prep_failed", error=str(e))
+        raise
 
-def store_workflow_state(workflow_dir: Path, state: str) -> None:
-    """Store minimal workflow state"""
+def resolve_project_path(project_path: Path, config: Dict[str, Any]) -> Path:
+    """Resolve project path from config or provided path"""
     try:
-        state_file = workflow_dir / 'workflow_state.txt'
-        with open(state_file, 'w', encoding='utf-8') as f:
-            f.write(f'Timestamp: {datetime.now(timezone.utc).isoformat()}\n')
-            f.write(f'Status: {state}\n')
-    except Exception as e:
-        logger.error("workflow.storage.state_failed", error=str(e))
+        # Check config first
+        config_project_path = config.get('project', {}).get('path')
+        if config_project_path:
+            project_dir = Path(config_project_path).resolve()
+        else:
+            # Fallback to provided path
+            project_dir = Path(project_path).resolve()
 
-def get_workflow_storage(config: Dict[str, Any]) -> Optional[Path]:
-    """Initialize workflow storage directory if enabled"""
-    storage_config = config.get('runtime', {}).get('workflow', {}).get('storage', {})
-    if not storage_config.get('enabled', False):
-        return None
-        
-    try:
-        # Get the Prefect flow run ID using Prefect 3.x API
-        workflow_id = flow_run.get_id() if flow_run else str(uuid4())
-        
-        root_dir = Path(storage_config.get('root_dir', 'workspaces/workflows'))
-        timestamp = datetime.now().strftime('%y%m%d_%H%M')
-        dirname = f"{timestamp}_{workflow_id}"
-        
-        workflow_dir = root_dir / dirname
-        workflow_dir.mkdir(parents=True, exist_ok=True)
-        (workflow_dir / 'events').mkdir(exist_ok=True)
-        
-        logger.debug("workflow.storage.initialized",
-                    dir=str(workflow_dir),
-                    workflow_id=workflow_id,
-                    timestamp=timestamp)
-                    
-        return workflow_dir
-        
-    except Exception as e:
-        logger.error("workflow.storage.init_failed", error=str(e))
-        return None
+        logger.info("workflow.paths.resolve",
+            config_path=config_project_path,
+            provided_path=str(project_path),
+            resolved_dir=str(project_dir))
 
-@flow(name="basic_refactoring",
-      description="Core workflow for intent-based refactoring",
-      retries=1,
-      retry_delay_seconds=60)
+        if not project_dir.exists():
+            raise ValueError(f"Project path does not exist: {project_dir}")
+
+        return project_dir
+
+    except Exception as e:
+        logger.error("workflow.path_resolution_failed", error=str(e))
+        raise
+
+@flow(name="basic_refactoring")
 def run_basic_workflow(
     project_path: Path,
     intent_desc: Dict[str, Any],
@@ -110,183 +86,144 @@ def run_basic_workflow(
 ) -> Dict[str, Any]:
     """Basic workflow implementing the core refactoring steps"""
     flow_logger = get_run_logger()
-    flow_logger.info("Starting basic refactoring workflow")
     
-    # Get Prefect flow run ID and add to config for other components to pick up like base_agent
-    if 'runtime' not in config:
-        config['runtime'] = {}
-    config['runtime']['run_id'] = flow_run.get_id()
-
-    # Initialize workflow storage
-    workflow_dir = get_workflow_storage(config)
-    if workflow_dir:
-        store_workflow_state(workflow_dir, "started")
     try:
-        # Get project path from config if available, otherwise use provided path
-        config_project_path = config.get('project', {}).get('path')
-        if config_project_path:
-            project_dir = Path(config_project_path).resolve()
-            # Update config with resolved path
-            config['project']['path'] = str(project_dir)
-        else:
-            # Fallback to provided path
-            project_dir = Path(project_path).resolve()
-
-        logger.info("workflow.paths.initialize",
-            config_project_path=config_project_path,
-            provided_path=str(project_path),
-            resolved_dir=str(project_dir),
-            cwd=str(Path.cwd())
-        )
-
-        if not project_dir.exists():
-            if workflow_dir:
-                store_workflow_state(workflow_dir, "error: project path not found")
-            return Failed(
-                message=f"Project path does not exist: {project_dir}",
-                result={
-                    "status": "error",
-                    "error": f"Project path does not exist: {project_dir}",
-                    "stage": "discovery"
+        # Get Prefect run ID
+        workflow_id = str(flow_run.get_id())
+        logger.info("workflow.initialized", 
+                   flow_id=workflow_id,
+                   project_path=str(project_path))
+        
+        # Prepare workflow configuration
+        workflow_config = prepare_workflow_config(config)
+        
+        # Initialize project with proper context
+        try:
+            project_config = {
+                'project': {
+                    'path': str(project_path.resolve()),
+                    'workspace_root': workflow_config.get('project', {}).get('workspace_root', 'workspaces')
                 }
-            )
-
-        # Run discovery with proper project context
-        discovery_config = create_discovery_task(config)
-        discovery_context = {
-            "project_path": str(project_dir),
-            "project": {
-                "path": str(project_dir),
-                "workspace_root": config.get('project', {}).get('workspace_root')
             }
-        }
+            project = Project.from_config(project_config)
+            workflow_config['project'] = project
+        except Exception as e:
+            logger.error("workflow.project_init_failed", error=str(e))
+            raise
+
+        # Configure agents with workflow context
+        discovery_config = create_discovery_task(workflow_config)
+        solution_config = create_solution_task(workflow_config)
+        coder_config = create_coder_task(workflow_config)
+        
+        # Run discovery with lineage context
         discovery_result = run_agent_task(
             agent_config=discovery_config,
-            context=discovery_context,
-            task_name="discovery"
-        )
-        
-        # Store raw discovery event
-        if workflow_dir:
-            store_event(workflow_dir, "discovery", "01", discovery_result, discovery_context)
-        
-        if not discovery_result["success"]:
-            if workflow_dir:
-                store_workflow_state(workflow_dir, f"error: {discovery_result.get('error', 'Unknown error')}")
-            return Failed(
-                message=f"Discovery failed: {discovery_result.get('error')}",
-                result={
-                    "status": "error",
-                    "error": discovery_result.get('error'),
-                    "stage": "discovery",
-                }
-            )
-
-        flow_logger.info("Discovery completed successfully")
-
-        # Run solution design with complete context
-        solution_config = create_solution_task(config)
-        solution_context = {
-            "input_data": {
-                "discovery_data": discovery_result["result_data"],
-                "intent": intent_desc,
+            context={
+                "project_path": str(project_path),
+                "workflow_run_id": workflow_id,
                 "project": {
-                    "path": str(project_dir),
-                    "workspace_root": config.get('project', {}).get('workspace_root')
+                    "path": str(project_path),
+                    "workspace_root": project.paths.workspace
                 }
             }
+        )
+
+        if not discovery_result.get("success"):
+            return {
+                "status": "error",
+            "error": error_msg,
+            "workflow_run_id": workflow_id,
+            "stage": "workflow",
+            "project_path": str(project_path)
         }
+
+        # Run solution design with lineage context
         solution_result = run_agent_task(
             agent_config=solution_config,
-            context=solution_context,
-            task_name="solution_design"
+            context={
+                "input_data": {
+                    "discovery_data": discovery_result["result_data"],
+                    "intent": intent_desc,
+                    "project": {
+                        "path": str(project_path),
+                        "workspace_root": project.paths.workspace
+                    }
+                },
+                "workflow_run_id": workflow_id
+            }
         )
 
-        # Store raw solution event
-        if workflow_dir:
-            store_event(workflow_dir, "solution_design", "02", solution_result, solution_context)
-
-        if not solution_result["success"]:
-            if workflow_dir:
-                store_workflow_state(workflow_dir, f"error: {solution_result.get('error', 'Unknown error')}")
-            return Failed(
-                message=f"Solution design failed: {solution_result.get('error')}",
-                result={
-                    "status": "error",
-                    "error": solution_result.get('error'),
-                    "stage": "solution_design",
-                    "discovery_data": discovery_result["result_data"]
-                }
-            )
-
-        flow_logger.info("Solution design completed successfully")
-
-        # Run coder with complete context
-        coder_config = create_coder_task(config)
-        coder_context = {
-            "input_data": solution_result["result_data"],
-            "project": {
-                "path": str(project_dir),
-                "workspace_root": config.get('project', {}).get('workspace_root')
+        if not solution_result.get("success"):
+            return {
+                "status": "error",
+                "error": solution_result.get("error"),
+                "stage": "solution_design",
+                "workflow_run_id": workflow_id,
+                "project_path": str(project_path),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "discovery_data": discovery_result.get("result_data")
             }
-        }
+
+        # Run coder with lineage context
         coder_result = run_agent_task(
             agent_config=coder_config,
-            context=coder_context,
-            task_name="coder"
-        )
-
-        # Store raw coder event
-        if workflow_dir:
-            store_event(workflow_dir, "coder", "03", coder_result, coder_context)
-
-        if not coder_result["success"]:
-            if workflow_dir:
-                store_workflow_state(workflow_dir, f"error: {coder_result.get('error', 'Unknown error')}")
-            return Failed(
-                message=f"Code implementation failed: {coder_result.get('error')}",
-                result={
-                    "status": "error",
-                    "error": coder_result.get('error'),
-                    "stage": "coder",
-                    "discovery_data": discovery_result["result_data"],
-                    "solution_data": solution_result["result_data"]
+            context={
+                "input_data": solution_result["result_data"],
+                "workflow_run_id": workflow_id,
+                "project": {
+                    "path": str(project_path),
+                    "workspace_root": project.paths.workspace
                 }
-            )
-
-        flow_logger.info("Code implementation completed successfully")
-
-        # Store final workflow state
-        if workflow_dir:
-            store_workflow_state(workflow_dir, "completed")
-
-        # Return successful completion state
-        return Completed(
-            message="Workflow completed successfully",
-            result={
-                "status": "success",
-                "stages": {
-                    "discovery": discovery_result["result_data"],
-                    "solution_design": solution_result["result_data"],
-                    "coder": coder_result["result_data"]
-                },
-                "changes": coder_result["result_data"].get("changes", []),
-                "project_path": str(project_dir)
             }
         )
+
+        if not coder_result.get("success"):
+            return {
+                "status": "error",
+                "error": coder_result.get("error"),
+                "stage": "coder",
+                "workflow_run_id": workflow_id,
+                "project_path": str(project_path),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "discovery_data": discovery_result.get("result_data"),
+                "solution_data": solution_result.get("result_data")
+            }
+
+        # Return workflow result with lineage context
+        return {
+            "status": "success",
+            "stages": {
+                "discovery": discovery_result["result_data"],
+                "solution_design": solution_result["result_data"],
+                "coder": coder_result["result_data"]
+            },
+            "changes": coder_result["result_data"].get("changes", []),
+            "project_path": str(project_path),
+            "workflow_run_id": workflow_id,
+            "metrics": {
+                "discovery": discovery_result.get("metrics", {}),
+                "solution_design": solution_result.get("metrics", {}),
+                "coder": coder_result.get("metrics", {})
+            },
+            "timestamps": {
+                "start": workflow_config["runtime"]["workflow"]["start_time"],
+                "end": datetime.now(timezone.utc).isoformat()
+            }
+        }
 
     except Exception as e:
         error_msg = str(e)
-        logger.error("basic_workflow.failed", error=error_msg)
-        
-        # Store error state
-        if workflow_dir:
-            store_workflow_state(workflow_dir, f"error: {error_msg}")
-
-        return Failed(
-            message=f"Workflow failed: {error_msg}",
-            result={
-                "status": "error",
-                "error": error_msg
-            }
-        )
+        workflow_id = str(flow_run.get_id())  # Still try to get workflow ID for error tracking
+        logger.error("workflow.failed", 
+                    error=error_msg,
+                    workflow_id=workflow_id,
+                    project_path=str(project_path))
+        return {
+            "status": "error",
+            "error": error_msg,
+            "workflow_run_id": workflow_id,
+            "project_path": str(project_path),
+            "stage": "workflow",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }

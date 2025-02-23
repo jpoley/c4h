@@ -1,6 +1,6 @@
 """
-Task factory functions for creating agent task configurations.
 Path: c4h_services/src/intent/impl/prefect/factories.py
+Task factory functions with enhanced configuration handling.
 """
 
 from typing import Dict, Any
@@ -11,37 +11,41 @@ from .models import AgentTaskConfig
 from c4h_agents.agents.discovery import DiscoveryAgent
 from c4h_agents.agents.solution_designer import SolutionDesigner 
 from c4h_agents.agents.coder import Coder
-from c4h_agents.agents.assurance import AssuranceAgent
-from c4h_agents.core.project import Project, ProjectPaths
+from c4h_agents.core.project import Project
 
 logger = structlog.get_logger()
 
-def get_project_dict(project: Project) -> Dict[str, str]:
-    """Convert Project instance paths to dictionary format"""
+def prepare_agent_config(config: Dict[str, Any], agent_section: str) -> Dict[str, Any]:
+    """
+    Prepare standard agent configuration following hierarchy.
+    
+    Args:
+        config: Complete configuration dictionary
+        agent_section: Name of agent section in llm_config.agents
+        
+    Returns:
+        Dictionary with agent configuration
+    """
+    # Get agent-specific config
+    agent_config = config.get("llm_config", {}).get("agents", {}).get(agent_section, {})
+    
+    # Build complete config
     return {
-        'path': str(project.paths.root),
-        'workspace_root': str(project.paths.workspace)
+        "llm_config": config.get("llm_config", {}),
+        "logging": config.get("logging", {}),
+        "providers": config.get("providers", {}),
+        "runtime": config.get("runtime", {}),
+        **agent_config  # Agent-specific overrides last
     }
 
 def create_discovery_task(config: Dict[str, Any]) -> AgentTaskConfig:
     """Create discovery agent task configuration."""
-    # Get discovery-specific config
-    discovery_config = config.get("llm_config", {}).get("agents", {}).get("discovery", {})
+    agent_config = prepare_agent_config(config, "discovery")
     
-    agent_config = {
-        "llm_config": config.get("llm_config", {}),
-        "logging": config.get("logging", {}),
-        "providers": config.get("providers", {}),
-        "tartxt_config": discovery_config.get("tartxt_config", {})  # Pass through TarTXT config
-    }
-
-    # Handle project configuration
-    if 'project' in config:
-        project_config = config['project']
-        if isinstance(project_config, Project):
-            agent_config['project'] = get_project_dict(project_config)
-        else:
-            agent_config['project'] = project_config
+    # Add tartxt config if present
+    discovery_config = config.get("llm_config", {}).get("agents", {}).get("discovery", {})
+    if "tartxt_config" in discovery_config:
+        agent_config["tartxt_config"] = discovery_config["tartxt_config"]
 
     return AgentTaskConfig(
         agent_class=DiscoveryAgent,
@@ -54,19 +58,7 @@ def create_discovery_task(config: Dict[str, Any]) -> AgentTaskConfig:
 
 def create_solution_task(config: Dict[str, Any]) -> AgentTaskConfig:
     """Create solution designer task configuration."""
-    agent_config = {
-        "llm_config": config.get("llm_config", {}),
-        "logging": config.get("logging", {}),
-        "providers": config.get("providers", {})
-    }
-    
-    # Handle project configuration
-    if 'project' in config:
-        project_config = config['project']
-        if isinstance(project_config, Project):
-            agent_config['project'] = get_project_dict(project_config)
-        else:
-            agent_config['project'] = project_config
+    agent_config = prepare_agent_config(config, "solution_designer")
 
     return AgentTaskConfig(
         agent_class=SolutionDesigner,
@@ -79,25 +71,23 @@ def create_solution_task(config: Dict[str, Any]) -> AgentTaskConfig:
 
 def create_coder_task(config: Dict[str, Any]) -> AgentTaskConfig:
     """Create coder agent task configuration."""
-    agent_config = {
-        "llm_config": config.get("llm_config", {}),
-        "logging": config.get("logging", {}),
-        "providers": config.get("providers", {}),
-        "backup": config.get("backup", {"enabled": True})  # Always enable backups for safety
-    }
+    agent_config = prepare_agent_config(config, "coder")
+    
+    # Add backup config if present
+    if "backup" in config:
+        agent_config["backup"] = config["backup"]
+    else:
+        agent_config["backup"] = {"enabled": True}
 
-    # Create Project instance if project config exists
+    # Project handling needs its own scope
     project = None
     try:
         if 'project' in config:
             project_config = config['project']
             if isinstance(project_config, Project):
                 project = project_config
-                agent_config['project'] = get_project_dict(project)
             else:
-                # Create new Project instance from config
                 project = Project.from_config(config)
-                agent_config['project'] = get_project_dict(project)
                 
             logger.info("coder_factory.project_initialized",
                        project_path=str(project.paths.root),
@@ -109,33 +99,8 @@ def create_coder_task(config: Dict[str, Any]) -> AgentTaskConfig:
         agent_class=Coder,
         config=agent_config,
         task_name="coder",
-        requires_approval=True,  # Code changes should be reviewed
-        max_retries=1,  # Be conservative with retries for code changes
+        requires_approval=True,
+        max_retries=1,
         retry_delay_seconds=60,
-        project=project  # Pass Project instance if available
-    )
-
-def create_assurance_task(config: Dict[str, Any]) -> AgentTaskConfig:
-    """Create assurance agent task configuration."""
-    agent_config = {
-        "llm_config": config.get("llm_config", {}),
-        "logging": config.get("logging", {}),
-        "providers": config.get("providers", {})
-    }
-    
-    # Handle project configuration
-    if 'project' in config:
-        project_config = config['project']
-        if isinstance(project_config, Project):
-            agent_config['project'] = get_project_dict(project_config)
-        else:
-            agent_config['project'] = project_config
-
-    return AgentTaskConfig(
-        agent_class=AssuranceAgent,
-        config=agent_config,
-        task_name="assurance",
-        requires_approval=False,
-        max_retries=2,
-        retry_delay_seconds=30
+        project=project  # Project properly scoped and passed
     )
