@@ -26,6 +26,10 @@ def run_agent_task(
     prefect_logger = get_run_logger()
     
     try:
+        # Ensure agent configuration has system.runid set
+        if 'system' not in agent_config.config:
+            agent_config.config['system'] = {}
+            
         # Initialize agent with complete config
         agent = agent_config.agent_class(config=agent_config.config)
         task_name = task_name or agent_config.task_name
@@ -37,17 +41,21 @@ def run_agent_task(
         run_id = (
             context.get('workflow_run_id') or 
             str(flow_run.get_id()) or
-            agent_config.config.get('runtime', {}).get('run_id')
+            agent_config.config.get('runtime', {}).get('run_id') or
+            agent_config.config.get('system', {}).get('runid')
         )
         
         if not run_id:
             logger.warning("task.missing_run_id", 
                 task=task_name,
                 context_keys=list(context.keys()))
-        elif 'workflow_run_id' not in context:
-            context['workflow_run_id'] = run_id
+        else:
+            # Set the run ID in both places to ensure it's found
+            agent_config.config['system']['runid'] = run_id
+            if 'workflow_run_id' not in context:
+                context['workflow_run_id'] = run_id
 
-        prefect_logger.info(f"Running {task_name} task")
+        prefect_logger.info(f"Running {task_name} task with run_id: {run_id}")
 
         # Enhance context with task metadata
         enhanced_context = {

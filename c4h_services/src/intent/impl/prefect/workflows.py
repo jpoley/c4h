@@ -4,12 +4,13 @@ Core workflow implementation with proper run ID propagation.
 """
 
 from prefect import flow, get_run_logger
-from prefect.runtime import flow_run
-from typing import Dict, Any, Optional
+from prefect.context import get_run_context
+from typing import Dict, Any
 import structlog
 from pathlib import Path
 from datetime import datetime, timezone
 from copy import deepcopy
+import uuid
 
 from c4h_agents.core.project import Project
 from .tasks import run_agent_task
@@ -24,24 +25,38 @@ logger = structlog.get_logger()
 def prepare_workflow_config(base_config: Dict[str, Any]) -> Dict[str, Any]:
     """Prepare workflow configuration with proper run ID and context"""
     try:
-        # Get workflow run ID from Prefect
-        workflow_id = str(flow_run.get_id())
+        # Get workflow run ID from Prefect context
+        ctx = get_run_context()
+        if ctx is not None and hasattr(ctx, "flow_run") and ctx.flow_run and hasattr(ctx.flow_run, "id"):
+            workflow_id = str(ctx.flow_run.id)
+        else:
+            workflow_id = str(uuid.uuid4())
+            logger.warning("workflow.missing_prefect_context", generated_workflow_id=workflow_id)
         
         # Deep copy to avoid mutations
         config = deepcopy(base_config)
         
-        # Add runtime config following hierarchy
+        # First, set the run ID at the root system namespace to ensure all components
+        # can find it consistently, following Config Design Principles
+        if 'system' not in config:
+            config['system'] = {}
+        config['system']['runid'] = workflow_id
+        
+        # For backward compatibility, also set in runtime config
         if 'runtime' not in config:
             config['runtime'] = {}
             
         config['runtime'].update({
             'workflow_run_id': workflow_id,  # Primary workflow ID
-            'run_id': workflow_id,          # Legacy support
+            'run_id': workflow_id,           # Legacy support
             'workflow': {
                 'id': workflow_id,
                 'start_time': datetime.now(timezone.utc).isoformat()
             }
         })
+        
+        # Also set at top level for agents that might check there
+        config['workflow_run_id'] = workflow_id
         
         logger.debug("workflow.config_prepared",
             workflow_id=workflow_id,
@@ -85,17 +100,18 @@ def run_basic_workflow(
     config: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Basic workflow implementing the core refactoring steps"""
-    flow_logger = get_run_logger()
+    run_logger = get_run_logger()
     
     try:
-        # Get Prefect run ID
-        workflow_id = str(flow_run.get_id())
+        # Prepare workflow configuration with proper run ID propagation
+        workflow_config = prepare_workflow_config(config)
+        
+        # Log the workflow ID for debugging
+        ctx = get_run_context()
+        workflow_id = workflow_config['system']['runid']
         logger.info("workflow.initialized", 
                    flow_id=workflow_id,
                    project_path=str(project_path))
-        
-        # Prepare workflow configuration
-        workflow_config = prepare_workflow_config(config)
         
         # Initialize project with proper context
         try:
@@ -121,7 +137,7 @@ def run_basic_workflow(
             agent_config=discovery_config,
             context={
                 "project_path": str(project_path),
-                "workflow_run_id": workflow_id,
+                "workflow_run_id": workflow_id,  # Explicitly pass the workflow ID
                 "project": {
                     "path": str(project_path),
                     "workspace_root": project.paths.workspace
@@ -132,11 +148,11 @@ def run_basic_workflow(
         if not discovery_result.get("success"):
             return {
                 "status": "error",
-            "error": error_msg,
-            "workflow_run_id": workflow_id,
-            "stage": "workflow",
-            "project_path": str(project_path)
-        }
+                "error": discovery_result.get("error"),
+                "workflow_run_id": workflow_id,
+                "stage": "workflow",
+                "project_path": str(project_path)
+            }
 
         # Run solution design with lineage context
         solution_result = run_agent_task(
@@ -150,7 +166,7 @@ def run_basic_workflow(
                         "workspace_root": project.paths.workspace
                     }
                 },
-                "workflow_run_id": workflow_id
+                "workflow_run_id": workflow_id  # Explicitly pass the workflow ID
             }
         )
 
@@ -170,7 +186,7 @@ def run_basic_workflow(
             agent_config=coder_config,
             context={
                 "input_data": solution_result["result_data"],
-                "workflow_run_id": workflow_id,
+                "workflow_run_id": workflow_id,  # Explicitly pass the workflow ID
                 "project": {
                     "path": str(project_path),
                     "workspace_root": project.paths.workspace
@@ -214,7 +230,11 @@ def run_basic_workflow(
 
     except Exception as e:
         error_msg = str(e)
-        workflow_id = str(flow_run.get_id())  # Still try to get workflow ID for error tracking
+        ctx = get_run_context()
+        if ctx is not None and hasattr(ctx, "flow_run") and ctx.flow_run and hasattr(ctx.flow_run, "id"):
+            workflow_id = str(ctx.flow_run.id)
+        else:
+            workflow_id = "unknown"
         logger.error("workflow.failed", 
                     error=error_msg,
                     workflow_id=workflow_id,
