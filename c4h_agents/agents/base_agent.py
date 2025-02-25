@@ -137,6 +137,9 @@ class BaseAgent(BaseConfig, BaseLLM):
         """Main process entry point"""
         return self._process(context)
 
+    # In file: c4h_agents/agents/base_agent.py
+    # Add this method to the BaseAgent class
+
     def _prepare_lineage_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         Prepare context with appropriate lineage tracking IDs.
@@ -170,6 +173,9 @@ class BaseAgent(BaseConfig, BaseLLM):
                 agent_type=self._get_agent_name(),
                 base_context=context
             )
+
+    # In file: c4h_agents/agents/base_agent.py
+    # Replace or modify the _process method
 
     def _process(self, context: Dict[str, Any]) -> AgentResponse:
         try:
@@ -214,17 +220,6 @@ class BaseAgent(BaseConfig, BaseLLM):
                 # Check if lineage tracking is enabled
                 lineage_enabled = hasattr(self, 'lineage') and self.lineage and getattr(self.lineage, 'enabled', False)
                 
-                # Start lineage tracking if enabled
-                if lineage_enabled:
-                    try:
-                        logger.debug("lineage.start_tracking", 
-                                    agent=self._get_agent_name(),
-                                    agent_execution_id=agent_execution_id)
-                    except Exception as e:
-                        logger.error("lineage.start_tracking_failed", 
-                                    error=str(e), 
-                                    agent=self._get_agent_name())
-                
                 # Get completion with automatic continuation handling
                 content, raw_response = self._get_completion_with_continuation([
                     {"role": "system", "content": messages.system},
@@ -251,29 +246,24 @@ class BaseAgent(BaseConfig, BaseLLM):
                 if lineage_enabled:
                     try:
                         logger.debug("lineage.tracking_attempt", 
-                                     agent=self._get_agent_name(), 
-                                     agent_execution_id=agent_execution_id,
-                                     parent_id=parent_id,
-                                     has_context=bool(lineage_context), 
-                                     has_messages=bool(messages), 
-                                     has_metrics=hasattr(raw_response, 'usage'))
-                                     
+                                    agent=self._get_agent_name(), 
+                                    agent_execution_id=agent_execution_id,
+                                    parent_id=parent_id,
+                                    has_context=bool(lineage_context), 
+                                    has_messages=bool(messages), 
+                                    has_metrics=hasattr(raw_response, 'usage'))
+                                    
                         # Track LLM interaction with full context for event sourcing
                         if hasattr(self.lineage, 'track_llm_interaction'):
-                            tracked_id = self.lineage.track_llm_interaction(
+                            self.lineage.track_llm_interaction(
                                 context=lineage_context,
                                 messages=messages,
                                 response=raw_response,
                                 metrics=response_metrics
                             )
-                            if tracked_id and tracked_id != agent_execution_id:
-                                logger.debug("lineage.id_mismatch", 
-                                           tracked_id=tracked_id, 
-                                           agent_execution_id=agent_execution_id)
-                                
                         logger.info("lineage.tracking_complete", 
-                                  agent=self._get_agent_name(),
-                                  agent_execution_id=agent_execution_id)
+                                agent=self._get_agent_name(),
+                                agent_execution_id=agent_execution_id)
                     except Exception as e:
                         logger.error("lineage.tracking_failed", 
                                     error=str(e), 
@@ -296,7 +286,7 @@ class BaseAgent(BaseConfig, BaseLLM):
                     metrics=response_metrics
                 )
             except Exception as e:
-                # Handle errors and track lineage failures
+                # Handle errors with lineage tracking
                 if lineage_enabled and hasattr(self.lineage, 'track_llm_interaction'):
                     try:
                         error_context = {
@@ -316,8 +306,8 @@ class BaseAgent(BaseConfig, BaseLLM):
                                     original_error=str(e))
                 
                 logger.error("llm.completion_failed", 
-                           error=str(e),
-                           agent_execution_id=agent_execution_id)
+                        error=str(e),
+                        agent_execution_id=agent_execution_id)
                 
                 return AgentResponse(
                     success=False, 
@@ -338,7 +328,7 @@ class BaseAgent(BaseConfig, BaseLLM):
         except Exception as e:
             logger.error("process.failed", error=str(e))
             return AgentResponse(success=False, data={}, error=str(e))
-
+        
     def _get_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
         try:
             if isinstance(context, dict):
@@ -414,6 +404,9 @@ class BaseAgent(BaseConfig, BaseLLM):
             raise ValueError(f"No prompt template found for type: {prompt_type}")
         return prompts[prompt_type]
 
+    # In file: c4h_agents/agents/base_agent.py
+    # Add this method to the BaseAgent class
+
     def call_skill(self, skill_name: str, skill_context: Dict[str, Any]) -> Dict[str, Any]:
         """
         Call a skill with proper lineage tracking.
@@ -435,15 +428,16 @@ class BaseAgent(BaseConfig, BaseLLM):
             )
             
             logger.debug("agent.calling_skill", 
-                       agent_id=self.agent_id,
-                       skill=skill_name,
-                       skill_execution_id=lineage_skill_context.get("agent_execution_id"))
+                    agent_id=self.agent_id,
+                    skill=skill_name,
+                    skill_execution_id=lineage_skill_context.get("agent_execution_id"))
             
             # Return enhanced context - the skill itself will handle execution
             return lineage_skill_context
         except Exception as e:
             logger.error("agent.skill_context_failed", 
-                       error=str(e),
-                       skill=skill_name)
+                    error=str(e),
+                    skill=skill_name)
             # If lineage context fails, fall back to original context
             return skill_context
+

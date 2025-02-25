@@ -20,6 +20,8 @@ from .factories import (
     create_solution_task,
     create_coder_task
 )
+# Import the LineageContext utility
+from c4h_agents.agents.lineage_context import LineageContext
 
 logger = structlog.get_logger()
 

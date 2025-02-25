@@ -192,6 +192,9 @@ class BaseLineage:
         
         return event_id, parent_id, step, path
 
+    # In file: c4h_agents/agents/base_lineage.py
+    # Replace or modify the _write_file_event method
+
     def _write_file_event(self, event: LineageEvent) -> None:
         """Write event to file system with basic serialization"""
         if not self.enabled or not self.lineage_dir:
@@ -205,35 +208,6 @@ class BaseLineage:
             # Determine how much data to include based on event detail level
             detail_level = self.config.get("event_detail_level", "full")
             
-            # Serialize messages based on detail level
-            if detail_level == "full":
-                messages_data = {
-                    "system": event.messages.system if hasattr(event.messages, "system") else None,
-                    "user": event.messages.user if hasattr(event.messages, "user") else None,
-                    "formatted_request": event.messages.formatted_request if hasattr(event.messages, "formatted_request") else None,
-                    "timestamp": event.messages.timestamp.isoformat() if hasattr(event.messages, "timestamp") else None
-                }
-                raw_output = self._serialize_value(event.raw_output)
-            elif detail_level == "minimal":
-                messages_data = {
-                    "system_length": len(event.messages.system) if hasattr(event.messages, "system") else 0,
-                    "user_length": len(event.messages.user) if hasattr(event.messages, "user") else 0,
-                    "timestamp": event.messages.timestamp.isoformat() if hasattr(event.messages, "timestamp") else None
-                }
-                raw_output = "Output available in separate file"
-            else:  # "standard" level
-                messages_data = {
-                    "system_preview": (event.messages.system[:100] + "...") if hasattr(event.messages, "system") and len(event.messages.system) > 100 else event.messages.system if hasattr(event.messages, "system") else None,
-                    "user_preview": (event.messages.user[:100] + "...") if hasattr(event.messages, "user") and len(event.messages.user) > 100 else event.messages.user if hasattr(event.messages, "user") else None,
-                    "timestamp": event.messages.timestamp.isoformat() if hasattr(event.messages, "timestamp") else None
-                }
-                # Include summary of raw output
-                if hasattr(event.raw_output, 'choices') and event.raw_output.choices:
-                    raw_content = event.raw_output.choices[0].message.content
-                    raw_output = (raw_content[:100] + "...") if len(raw_content) > 100 else raw_content
-                else:
-                    raw_output = str(event.raw_output)[:100] + "..." if len(str(event.raw_output)) > 100 else str(event.raw_output)
-            
             # Build event data dict
             event_data = {
                 "event_id": event.event_id,
@@ -241,7 +215,12 @@ class BaseLineage:
                 "agent": event.agent_name,
                 "agent_type": event.agent_type,
                 "input_context": self._serialize_value(event.input_context),
-                "messages": messages_data,
+                "messages": {
+                    "system": event.messages.system if hasattr(event.messages, "system") else None,
+                    "user": event.messages.user if hasattr(event.messages, "user") else None,
+                    "formatted_request": event.messages.formatted_request if hasattr(event.messages, "formatted_request") else None,
+                    "timestamp": event.messages.timestamp.isoformat() if hasattr(event.messages, "timestamp") else None
+                },
                 "metrics": self._serialize_value(event.metrics),
                 "run_id": event.run_id,
                 "parent_id": event.parent_id,
@@ -252,9 +231,9 @@ class BaseLineage:
                 "output_hash": event.output_hash
             }
             
-            # Only include raw output if not storing separately
+            # Include raw output unless storing separately
             if not self.config.get("separate_input_output", False):
-                event_data["raw_output"] = raw_output
+                event_data["raw_output"] = self._serialize_value(event.raw_output)
             
             # Write main event file
             with open(temp_file, 'w') as f:
@@ -282,12 +261,12 @@ class BaseLineage:
                     }, f, indent=2)
             
             logger.info("lineage.event_saved", 
-                       path=str(event_file), 
-                       agent=event.agent_name, 
-                       run_id=event.run_id,
-                       event_size=event_file.stat().st_size,
-                       event_id=event.event_id,
-                       parent_id=event.parent_id)
+                    path=str(event_file), 
+                    agent=event.agent_name, 
+                    run_id=event.run_id,
+                    event_size=event_file.stat().st_size,
+                    event_id=event.event_id,
+                    parent_id=event.parent_id)
                 
         except Exception as e:
             logger.error("lineage.write_failed", 
@@ -296,25 +275,36 @@ class BaseLineage:
                         agent=event.agent_name,
                         event_id=event.event_id)
 
+    # In file: c4h_agents/agents/base_lineage.py
+    # Replace or modify the track_llm_interaction method
+
     def track_llm_interaction(self,
-                              context: Dict[str, Any],
-                              messages: LLMMessages,
-                              response: Any,
-                              metrics: Optional[Dict] = None) -> None:
+                            context: Dict[str, Any],
+                            messages: LLMMessages,
+                            response: Any,
+                            metrics: Optional[Dict] = None) -> None:
         """Track complete LLM interaction"""
         if not self.enabled:
             logger.debug("lineage.tracking_skipped", enabled=False)
             return
             
         try:
-            # Extract lineage metadata
-            event_id, parent_id, step, execution_path = self._extract_lineage_metadata(context)
+            # Extract event_id, parent_id, and other lineage metadata
+            event_id = context.get("agent_execution_id", str(uuid.uuid4()))
+            parent_id = context.get("parent_id")
+            agent_type = context.get("agent_type", self.agent_type)
+            step = context.get("step")
+            
+            # Extract execution path
+            execution_path = []
+            if "lineage_metadata" in context and "execution_path" in context["lineage_metadata"]:
+                execution_path = context["lineage_metadata"]["execution_path"]
             
             # Create the lineage event
             event = LineageEvent(
                 event_id=event_id,
                 agent_name=self.agent_name,
-                agent_type=self.agent_type,
+                agent_type=agent_type,
                 run_id=self.run_id,
                 parent_id=parent_id,
                 input_context=context,
@@ -322,20 +312,18 @@ class BaseLineage:
                 raw_output=response,
                 metrics=metrics,
                 step=step,
-                execution_path=execution_path,
-                input_hash=None,  # Could add content hashing for deduplication
-                output_hash=None
+                execution_path=execution_path
             )
             
             # Track in appropriate backend
-            if hasattr(self, 'client') and self.config.get("backend", {}).get("type") == "marquez":
-                self._emit_marquez_event(event)
-            else:
-                self._write_file_event(event)
-                
-            # Return event ID for chaining
-            return event_id
-                
+            self._write_file_event(event)
+            
+            logger.info("lineage.event_saved", 
+                    agent=self.agent_name, 
+                    event_id=event_id,
+                    parent_id=parent_id,
+                    path_length=len(execution_path) if execution_path else 0)
+                    
         except Exception as e:
             logger.error("lineage.track_failed", error=str(e), agent=self.agent_name)
             if not self.config.get("error_handling", {}).get("ignore_failures", True):

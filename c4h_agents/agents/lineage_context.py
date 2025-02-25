@@ -1,3 +1,5 @@
+# File: c4h_agents/agents/lineage_context.py
+
 """
 Lineage context management for agent coordination.
 Path: c4h_agents/agents/lineage_context.py
@@ -79,6 +81,7 @@ class LineageContext:
             context["parent_id"] = parent_id
         
         # Set agent type and step if provided
+        context["agent_type"] = agent_type
         if step is not None:
             context["step"] = step
         
@@ -116,7 +119,7 @@ class LineageContext:
         Create a context for a skill execution with proper lineage tracking.
         
         Args:
-            agent_id: ID of the agent calling this skill
+            agent_id: ID of the agent calling this skill (becomes parent_id)
             skill_type: Type of skill (e.g., "semantic_extract", "semantic_merge")
             workflow_run_id: Optional workflow run ID (will extract from base_context if not provided)
             base_context: Optional base context to extend
