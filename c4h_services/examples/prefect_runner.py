@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Extended Prefect runner supporting both individual agents and full workflow execution.
 Path: c4h_services/examples/prefect_runner.py
@@ -5,7 +6,15 @@ Path: c4h_services/examples/prefect_runner.py
 
 import sys
 from pathlib import Path
-from typing import Dict, Any, Optional, Literal, List
+
+# Ensure that the project root (which contains c4h_agents and c4h_services) is in the module search path.
+# This assumes that the project root is three levels up from this file.
+root_dir = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(root_dir))
+# For debugging purposes, you can uncomment the following line to verify:
+# print("Project root added to sys.path:", root_dir)
+
+from typing import Dict, Any, Optional, List
 import structlog
 import argparse
 from prefect import flow
@@ -13,11 +22,7 @@ from rich.console import Console
 import yaml
 from enum import Enum
 
-# Add source directories to path BEFORE any c4h imports
-root_dir = Path(__file__).parent.parent.parent
-sys.path.append(str(root_dir))
-
-# Now import c4h packages
+# Now import c4h packages (which should now be found)
 from c4h_agents.config import deep_merge
 from c4h_agents.agents.discovery import DiscoveryAgent
 from c4h_agents.agents.solution_designer import SolutionDesigner
@@ -27,7 +32,7 @@ from c4h_agents.skills.semantic_iterator import SemanticIterator
 from c4h_agents.skills.semantic_merge import SemanticMerge
 from c4h_agents.skills.semantic_extract import SemanticExtract
 from c4h_agents.skills.asset_manager import AssetManager
-from c4h_services.src.intent.impl.prefect.workflows import run_basic_workflow  # Added missing import
+from c4h_services.src.intent.impl.prefect.workflows import run_basic_workflow  # Import workflow functions
 from c4h_services.src.intent.impl.prefect.tasks import run_agent_task, AgentTaskConfig
 
 logger = structlog.get_logger()
@@ -39,12 +44,11 @@ class RunMode(str, Enum):
 
 class LogMode(str, Enum):
     """Logging modes supported by runner"""
-    DEBUG = "debug"     
-    NORMAL = "normal"   
+    DEBUG = "debug"
+    NORMAL = "normal"
 
 # Agent registry for individual runs
 AGENT_REGISTRY = {
-    # Core Agents
     "discovery": lambda config: AgentTaskConfig(
         agent_class=DiscoveryAgent,
         config=config,
@@ -65,12 +69,10 @@ AGENT_REGISTRY = {
         config=config,
         task_name="assurance"
     ),
-    
-    # Semantic Skills
     "semantic_iterator": lambda config: AgentTaskConfig(
         agent_class=SemanticIterator,
         config={
-            **config,  # Base config
+            **config,
             "instruction": config.get('instruction', ''),
             "format": config.get('format', 'json'),
         },
@@ -96,7 +98,6 @@ AGENT_REGISTRY = {
 def load_configs(app_config_path: str, system_config_paths: Optional[List[str]] = None) -> Dict[str, Any]:
     """Load and merge configurations in proper order"""
     try:
-        # Load application config first
         with open(app_config_path) as f:
             app_config = yaml.safe_load(f) or {}
             
@@ -104,39 +105,32 @@ def load_configs(app_config_path: str, system_config_paths: Optional[List[str]] 
                    app_config_keys=list(app_config.keys()),
                    project_path=app_config.get('project', {}).get('path'))
         
-        # Start with empty base config
         merged_config = {}
         
-        # Process system configs in order if provided
         if system_config_paths:
             for sys_path in system_config_paths:
                 path = Path(sys_path)
                 if not path.exists():
                     logger.warning("config.system_config.not_found", path=str(path))
                     continue
-                    
                 with open(path) as f:
                     sys_config = yaml.safe_load(f) or {}
                     logger.debug("config.merge.system_config",
                                path=str(path),
                                config_keys=list(sys_config.keys()))
                     merged_config = deep_merge(merged_config, sys_config)
-                    
-        # If no system configs provided or found, check default locations
         elif not merged_config:
             default_paths = [
                 Path("config/system_config.yml"),
                 Path("../config/system_config.yml"),
                 root_dir / "config" / "system_config.yml"
             ]
-            
             logger.info("config.paths.search", 
                 cwd=str(Path.cwd()),
                 root_dir=str(root_dir),
                 sys_paths=[str(p) for p in default_paths],
                 config_path=app_config_path
             )
-            
             for path in default_paths:
                 if path.exists():
                     with open(path) as f:
@@ -147,10 +141,8 @@ def load_configs(app_config_path: str, system_config_paths: Optional[List[str]] 
                         merged_config = deep_merge(merged_config, sys_config)
                     break
                     
-        # Finally merge application config
         final_config = deep_merge(merged_config, app_config)
         
-        # Ensure llm_config exists at root
         if 'llm_config' not in final_config:
             logger.warning("config.no_llm_config_found",
                          final_keys=list(final_config.keys()))
@@ -171,37 +163,45 @@ def run_flow(
 ) -> Dict[str, Any]:
     """Main flow for running agents or workflows"""
     try:
-        # Resolve project paths first
         if 'project' in config:
             project_config = config['project']
             if 'path' in project_config:
                 project_path = Path(project_config['path']).resolve()
                 project_config['path'] = str(project_path)
-                
-                # Resolve workspace root relative to project path if not absolute
                 workspace_root = project_config.get('workspace_root')
                 if workspace_root and not Path(workspace_root).is_absolute():
                     project_config['workspace_root'] = str(project_path / workspace_root)
-                    
                 logger.info("runner.project.paths",
                     project_path=str(project_path),
                     workspace_root=project_config.get('workspace_root'))
+        
+        context = {"input_data": config.get("input_data", {})}
+        
+        if 'project' in config:
+            context['project'] = config['project']
+            
+        if 'runtime' in config:
+            runtime_config = config['runtime']
+            if 'lineage' in runtime_config:
+                lineage_config = runtime_config['lineage']
+                if lineage_config.get('enabled', False):
+                    from prefect.context import get_run_context
+                    ctx = get_run_context()
+                    flow_id = None
+                    if ctx is not None and hasattr(ctx, "flow_run") and ctx.flow_run and hasattr(ctx.flow_run, "id"):
+                        flow_id = str(ctx.flow_run.id)
+                    if flow_id:
+                        context['workflow_run_id'] = flow_id
+                        logger.info("lineage.context_enhanced",
+                                  workflow_run_id=context['workflow_run_id'])
+        
+        if extra_params:
+            context.update(extra_params)
 
         if mode == RunMode.AGENT:
             if not agent_type or agent_type not in AGENT_REGISTRY:
                 raise ValueError(f"Invalid agent type: {agent_type}")
-                
-            # Run single agent
             task_config = AGENT_REGISTRY[agent_type](config)
-            context = {"input_data": config.get("input_data", {})}
-            
-            # Add project context if available
-            if 'project' in config:
-                context['project'] = config['project']
-                
-            if extra_params:
-                context.update(extra_params)
-                
             result = run_agent_task(
                 agent_config=task_config,
                 context=context,
@@ -212,23 +212,18 @@ def run_flow(
                 "result": result.result() if hasattr(result, "result") else result
             }
         else:
-            # Run workflow using project path from config if available
             project_path = config.get('project', {}).get('path')
             if not project_path:
                 project_path = config.get("project_path", ".")
-            
             result = run_basic_workflow(
                 project_path=Path(project_path),
                 intent_desc=config.get("intent", {}),
                 config=config
             )
-            
-            # Extract result from Prefect State
             if hasattr(result, "result"):
                 workflow_result = result.result()
             else:
                 workflow_result = result
-                
             return {
                 "success": True,
                 "result": workflow_result
@@ -247,7 +242,6 @@ def format_output(data: Dict[str, Any], mode: RunMode) -> None:
     print("\n=== Results ===\n")
     
     def print_value(value: Any, indent: int = 0) -> None:
-        """Print a value, preserving formatting"""
         spaces = " " * indent
         if isinstance(value, dict):
             for k, v in value.items():
@@ -257,16 +251,13 @@ def format_output(data: Dict[str, Any], mode: RunMode) -> None:
             for item in value:
                 print_value(item, indent + 4)
         else:
-            # Print string with original formatting
             print(f"{spaces}{value}")
     
     try:
-        # Handle successful workflow completion
         if mode == RunMode.WORKFLOW:
             if isinstance(data, str):
                 print(data)
                 return
-                
             result = data.result() if hasattr(data, 'result') else data
             if isinstance(result, dict) and 'result' in result:
                 result_data = result['result']
@@ -278,29 +269,22 @@ def format_output(data: Dict[str, Any], mode: RunMode) -> None:
                 }
             else:
                 result_data = result
-                
-        else:  # Agent mode
-            # Extract result data handling different formats
+        else:
             if isinstance(data, dict):
                 if 'success' in data and data['success']:
-                    # Handle semantic iterator specific results
                     if 'result' in data and isinstance(data['result'], dict):
                         agent_data = data['result']
                         if 'result_data' in agent_data:
-                            # Standard agent format
                             result_data = agent_data['result_data']
                         else:
-                            # Direct result data
                             result_data = agent_data
                     else:
-                        # Direct result format
                         result_data = data.get('result_data', data.get('result', {}))
                 else:
                     result_data = {'error': data.get('error', 'Unknown error')}
             else:
                 result_data = data
 
-        # Print all result data with consistent indentation
         print_value(result_data)
             
     except Exception as e:
@@ -319,7 +303,6 @@ def main():
         choices=list(RunMode),
         help="Run mode (agent or workflow)"
     )
-    # Define agent groups for better help display
     agent_choices = list(AGENT_REGISTRY.keys())
     parser.add_argument(
         "--agent",
@@ -360,19 +343,16 @@ def main():
         if args.mode == RunMode.AGENT and not args.agent:
             parser.error("Agent type is required for agent mode")
             
-        # Parse additional parameters
         extra_params = {}
         for param in args.param:
             key, value = param.split("=", 1)
             extra_params[key.strip()] = value.strip()
 
-        # Load config with new system config handling
         config = load_configs(
             app_config_path=args.config,
             system_config_paths=args.system_configs
         )
 
-        # Run flow
         result = run_flow(
             mode=args.mode,
             config=config,
@@ -380,7 +360,6 @@ def main():
             extra_params=extra_params
         )
         
-        # Display results
         format_output(result, args.mode)
         
         if not result.get("success", False):

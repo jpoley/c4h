@@ -32,7 +32,7 @@ def is_text_file(file_path: str) -> bool:
     ext = os.path.splitext(file_path)[1].lower()
     return ext in text_file_extensions
 
-def process_files(files: List[str], exclusions: List[str]) -> str:
+def process_files(files: List[str], exclusions: List[str], include_binary: bool) -> str:
     """Process files and directories, excluding specified patterns."""
     output = "== Manifest ==\n"
     content = "\n== Content ==\n"
@@ -44,17 +44,17 @@ def process_files(files: List[str], exclusions: List[str]) -> str:
                     file_path = os.path.join(root, filename)
                     if not any(glob.fnmatch.fnmatch(file_path, pat) for pat in exclusions):
                         output += f"{file_path}\n"
-                        content += process_file(file_path)
+                        content += process_file(file_path, include_binary)
         elif os.path.isfile(item):
             if not any(glob.fnmatch.fnmatch(item, pat) for pat in exclusions):
                 output += f"{item}\n"
-                content += process_file(item)
+                content += process_file(item, include_binary)
         else:
             output += f"Warning: {item} does not exist, skipping.\n"
 
     return output + content
 
-def process_file(file_path: str) -> str:
+def process_file(file_path: str, include_binary: bool) -> str:
     """Process a single file, returning its content or a skip message for binary files."""
     mime_type, file_size, last_modified = get_file_metadata(file_path)
     
@@ -64,7 +64,7 @@ def process_file(file_path: str) -> str:
     output += f"Size: {file_size} bytes\n"
     output += f"Last Modified: {last_modified}\n"
 
-    if is_text_file(file_path):
+    if include_binary or is_text_file(file_path):
         output += "Contents:\n"
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             output += f.read()
@@ -90,12 +90,13 @@ def main():
     parser.add_argument('-x', '--exclude', help="Glob patterns for files to exclude", default="")
     parser.add_argument('-f', '--file', help="Output file name")
     parser.add_argument('-o', '--output', action='store_true', help="Output to stdout")
+    parser.add_argument('--include-binary', action='store_true', help="Include content of binary files")
     parser.add_argument('items', nargs='+', help="Files and directories to process")
 
     args = parser.parse_args()
 
     exclusions = [pat.strip() for pat in args.exclude.split(',') if pat.strip()]
-    result = process_files(args.items, exclusions)
+    result = process_files(args.items, exclusions, args.include_binary)
 
     if args.output:
         print(result)
