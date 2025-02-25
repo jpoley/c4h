@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from copy import deepcopy
 import uuid
 
-from c4h_agents.core.project import Project
 from c4h_agents.config import create_config_node
 from .tasks import run_agent_task
 from .factories import (
@@ -124,27 +123,22 @@ def run_basic_workflow(
         # Log the workflow ID for debugging
         workflow_id = config_node.get_value("system.runid")
         logger.info("workflow.initialized", 
-                   flow_id=workflow_id,
-                   project_path=str(project_path))
+                  flow_id=workflow_id,
+                  project_path=str(project_path))
         
-        # Initialize project with proper context
-        try:
-            project_config = {
-                'project': {
-                    'path': str(project_path.resolve()),
-                    'workspace_root': config_node.get_value("project.workspace_root") or "workspaces"
-                },
-                # Explicitly include the system namespace with run ID
-                'system': workflow_config.get('system', {}),
-                'workflow_run_id': workflow_id
-            }
-            project = Project.from_config(project_config)
-            # Ensure the project has the workflow ID information
-            workflow_config['project'] = project
-        except Exception as e:
-            logger.error("workflow.project_init_failed", error=str(e))
-            raise
-
+        # Resolve project path
+        resolved_path = resolve_project_path(project_path, workflow_config)
+        
+        # Ensure project config exists and contains required paths
+        if 'project' not in workflow_config:
+            workflow_config['project'] = {}
+            
+        # Update project config with resolved paths
+        workflow_config['project'].update({
+            'path': str(resolved_path),
+            'workspace_root': config_node.get_value("project.workspace_root") or "workspaces"
+        })
+        
         # Configure agents with workflow context
         discovery_config = create_discovery_task(workflow_config)
         solution_config = create_solution_task(workflow_config)
@@ -156,18 +150,23 @@ def run_basic_workflow(
             "system": {"runid": workflow_id}  # Include system namespace directly
         }
         
+        # Get workspace path for context
+        workspace_path = config_node.get_value("project.workspace_root") or "workspaces"
+        if not Path(workspace_path).is_absolute() and Path(resolved_path).is_absolute():
+            workspace_path = str(Path(resolved_path) / workspace_path)
+        
         # Run discovery with lineage context
         discovery_context = {
             **base_context,
-            "project_path": str(project_path),
+            "project_path": str(resolved_path),
             "project": {
-                "path": str(project_path),
-                "workspace_root": project.paths.workspace
+                "path": str(resolved_path),
+                "workspace_root": workspace_path
             }
         }
         logger.debug("workflow.discovery_context", 
-                    workflow_id=workflow_id, 
-                    context_keys=list(discovery_context.keys()))
+                   workflow_id=workflow_id, 
+                   context_keys=list(discovery_context.keys()))
         
         discovery_result = run_agent_task(
             agent_config=discovery_config,
@@ -180,7 +179,7 @@ def run_basic_workflow(
                 "error": discovery_result.get("error"),
                 "workflow_run_id": workflow_id,
                 "stage": "workflow",
-                "project_path": str(project_path)
+                "project_path": str(resolved_path)
             }
 
         # Run solution design with lineage context
@@ -190,14 +189,14 @@ def run_basic_workflow(
                 "discovery_data": discovery_result["result_data"],
                 "intent": intent_desc,
                 "project": {
-                    "path": str(project_path),
-                    "workspace_root": project.paths.workspace
+                    "path": str(resolved_path),
+                    "workspace_root": workspace_path
                 }
             }
         }
         logger.debug("workflow.solution_context", 
-                    workflow_id=workflow_id, 
-                    context_keys=list(solution_context.keys()))
+                   workflow_id=workflow_id, 
+                   context_keys=list(solution_context.keys()))
                     
         solution_result = run_agent_task(
             agent_config=solution_config,
@@ -210,7 +209,7 @@ def run_basic_workflow(
                 "error": solution_result.get("error"),
                 "stage": "solution_design",
                 "workflow_run_id": workflow_id,
-                "project_path": str(project_path),
+                "project_path": str(resolved_path),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "discovery_data": discovery_result.get("result_data")
             }
@@ -220,13 +219,13 @@ def run_basic_workflow(
             **base_context,
             "input_data": solution_result["result_data"],
             "project": {
-                "path": str(project_path),
-                "workspace_root": project.paths.workspace
+                "path": str(resolved_path),
+                "workspace_root": workspace_path
             }
         }
         logger.debug("workflow.coder_context", 
-                    workflow_id=workflow_id, 
-                    context_keys=list(coder_context.keys()))
+                   workflow_id=workflow_id, 
+                   context_keys=list(coder_context.keys()))
                     
         coder_result = run_agent_task(
             agent_config=coder_config,
@@ -239,7 +238,7 @@ def run_basic_workflow(
                 "error": coder_result.get("error"),
                 "stage": "coder",
                 "workflow_run_id": workflow_id,
-                "project_path": str(project_path),
+                "project_path": str(resolved_path),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "discovery_data": discovery_result.get("result_data"),
                 "solution_data": solution_result.get("result_data")
@@ -254,7 +253,7 @@ def run_basic_workflow(
                 "coder": coder_result["result_data"]
             },
             "changes": coder_result["result_data"].get("changes", []),
-            "project_path": str(project_path),
+            "project_path": str(resolved_path),
             "workflow_run_id": workflow_id,
             "metrics": {
                 "discovery": discovery_result.get("metrics", {}),
@@ -275,9 +274,9 @@ def run_basic_workflow(
         else:
             workflow_id = "unknown"
         logger.error("workflow.failed", 
-                    error=error_msg,
-                    workflow_id=workflow_id,
-                    project_path=str(project_path))
+                   error=error_msg,
+                   workflow_id=workflow_id,
+                   project_path=str(project_path))
         return {
             "status": "error",
             "error": error_msg,

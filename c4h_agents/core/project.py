@@ -1,3 +1,5 @@
+# Path: c4h_agents/core/project.py
+
 """
 Project domain model for code refactoring system.
 Path: c4h_agents/core/project.py

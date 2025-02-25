@@ -184,6 +184,12 @@ def get_by_path(data: Dict[str, Any], path: List[str]) -> Any:
                 if key not in current:
                     return None
                 current = current[key]
+            # Handle objects that support attribute access but aren't dictionaries
+            elif hasattr(current, key) and not isinstance(current, (str, int, float, bool)):
+                try:
+                    current = getattr(current, key)
+                except (AttributeError, TypeError):
+                    return None
             elif isinstance(current, str):
                 try:
                     parsed = json.loads(current)

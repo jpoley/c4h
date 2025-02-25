@@ -1,3 +1,5 @@
+# Path: c4h_agents/agents/base_config.py
+
 """
 Configuration management for agent implementations following design principles.
 Path: c4h_agents/agents/base_config.py
@@ -61,8 +63,12 @@ class BaseConfig:
         }
 
     def ensure_paths(self):
-        # Implement path creation if necessary
-        pass
+        """Ensure project paths exist"""
+        # Only create directories if needed
+        if hasattr(self.project.paths, 'workspace'):
+            self.project.paths.workspace.mkdir(parents=True, exist_ok=True)
+        if hasattr(self.project.paths, 'output'):
+            self.project.paths.output.mkdir(parents=True, exist_ok=True)
 
     def lookup(self, path: str) -> Any:
         """

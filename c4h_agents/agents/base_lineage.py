@@ -26,6 +26,18 @@ from c4h_agents.config import create_config_node
 
 logger = structlog.get_logger()
 
+class LineageEvent:
+    """Complete lineage event for LLM interaction"""
+    input_context: Dict[str, Any]
+    messages: LLMMessages
+    raw_output: Any
+    metrics: Optional[Dict] = None
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    parent_run_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+
 @dataclass
 class LineageEvent:
     """Complete lineage event for LLM interaction"""
@@ -124,7 +136,7 @@ class BaseLineage:
         generated_id = str(uuid.uuid4())
         logger.warning("lineage.missing_run_id", agent=self.agent_name, generated_id=generated_id)
         return generated_id
-
+    
     def _serialize_value(self, value: Any) -> Any:
         """Serialize a single value with type handling"""
         if isinstance(value, (int, float, str, bool, type(None))):

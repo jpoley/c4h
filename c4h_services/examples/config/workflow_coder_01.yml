@@ -1,7 +1,9 @@
 # Path: c4h_services/examples/config/lineage_test_workflow.yml
 
 # Project settings
-project_path: "./tests/test_projects/"  # Using test project
+project:
+  path: "./tests/test_projects/"  # Using test project
+  workspace_root: "workspaces"
 
 # Intent description
 intent:
@@ -13,7 +15,7 @@ intent:
 
 llm_config:
   default_provider: "anthropic"
-  default_model: "claude-3-5-sonnet-20241022"
+  default_model: "claude-3-7-sonnet-20250219"
   agents:
     discovery:
       temperature: 0
