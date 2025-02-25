@@ -70,37 +70,6 @@ def prepare_workflow_config(base_config: Dict[str, Any]) -> Dict[str, Any]:
         logger.error("workflow.config_prep_failed", error=str(e))
         raise
 
-def resolve_project_path(project_path: Path, config: Dict[str, Any]) -> Path:
-    """
-    Resolve project path from config or provided path.
-    Uses path-based configuration access.
-    """
-    try:
-        # Create configuration node
-        config_node = create_config_node(config)
-        
-        # Check config first
-        config_project_path = config_node.get_value("project.path")
-        if config_project_path:
-            project_dir = Path(config_project_path).resolve()
-        else:
-            # Fallback to provided path
-            project_dir = Path(project_path).resolve()
-
-        logger.info("workflow.paths.resolve",
-            config_path=config_project_path,
-            provided_path=str(project_path),
-            resolved_dir=str(project_dir))
-
-        if not project_dir.exists():
-            raise ValueError(f"Project path does not exist: {project_dir}")
-
-        return project_dir
-
-    except Exception as e:
-        logger.error("workflow.path_resolution_failed", error=str(e))
-        raise
-
 @flow(name="basic_refactoring")
 def run_basic_workflow(
     project_path: Path,
@@ -126,20 +95,15 @@ def run_basic_workflow(
                   flow_id=workflow_id,
                   project_path=str(project_path))
         
-        # Resolve project path
-        resolved_path = resolve_project_path(project_path, workflow_config)
-        
-        # Ensure project config exists and contains required paths
+        # Ensure project config exists - path resolution happens in asset manager
         if 'project' not in workflow_config:
             workflow_config['project'] = {}
             
-        # Update project config with resolved paths - only configuration here, no domain objects
-        workflow_config['project'].update({
-            'path': str(resolved_path),
-            'workspace_root': config_node.get_value("project.workspace_root") or "workspaces"
-        })
+        # Set original project path in config - let components resolve as needed
+        if 'path' not in workflow_config['project']:
+            workflow_config['project']['path'] = str(project_path)
         
-        # Configure agent tasks - each agent will create its own Project object if needed
+        # Configure agent tasks - each agent will create its own domain objects if needed
         discovery_config = create_discovery_task(workflow_config)
         solution_config = create_solution_task(workflow_config)
         coder_config = create_coder_task(workflow_config)
@@ -150,19 +114,11 @@ def run_basic_workflow(
             "system": {"runid": workflow_id}  # Include system namespace directly
         }
         
-        # Get workspace path for context
-        workspace_path = config_node.get_value("project.workspace_root") or "workspaces"
-        if not Path(workspace_path).is_absolute() and Path(resolved_path).is_absolute():
-            workspace_path = str(Path(resolved_path) / workspace_path)
-        
-        # Run discovery with lineage context
+        # Run discovery with consistent project config
         discovery_context = {
             **base_context,
-            "project_path": str(resolved_path),
-            "project": {
-                "path": str(resolved_path),
-                "workspace_root": workspace_path
-            }
+            "project_path": str(project_path),
+            "project": workflow_config['project']  # Pass config directly
         }
         logger.debug("workflow.discovery_context", 
                    workflow_id=workflow_id, 
@@ -179,19 +135,16 @@ def run_basic_workflow(
                 "error": discovery_result.get("error"),
                 "workflow_run_id": workflow_id,
                 "stage": "workflow",
-                "project_path": str(resolved_path)
+                "project_path": str(project_path)
             }
 
-        # Run solution design with lineage context
+        # Run solution design with consistent project config
         solution_context = {
             **base_context,
             "input_data": {
                 "discovery_data": discovery_result["result_data"],
                 "intent": intent_desc,
-                "project": {
-                    "path": str(resolved_path),
-                    "workspace_root": workspace_path
-                }
+                "project": workflow_config['project']  # Pass config directly
             }
         }
         logger.debug("workflow.solution_context", 
@@ -209,19 +162,16 @@ def run_basic_workflow(
                 "error": solution_result.get("error"),
                 "stage": "solution_design",
                 "workflow_run_id": workflow_id,
-                "project_path": str(resolved_path),
+                "project_path": str(project_path),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "discovery_data": discovery_result.get("result_data")
             }
 
-        # Run coder with lineage context
+        # Run coder with consistent project config
         coder_context = {
             **base_context,
             "input_data": solution_result["result_data"],
-            "project": {
-                "path": str(resolved_path),
-                "workspace_root": workspace_path
-            }
+            "project": workflow_config['project']  # Pass config directly
         }
         logger.debug("workflow.coder_context", 
                    workflow_id=workflow_id, 
@@ -238,7 +188,7 @@ def run_basic_workflow(
                 "error": coder_result.get("error"),
                 "stage": "coder",
                 "workflow_run_id": workflow_id,
-                "project_path": str(resolved_path),
+                "project_path": str(project_path),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "discovery_data": discovery_result.get("result_data"),
                 "solution_data": solution_result.get("result_data")
@@ -253,7 +203,7 @@ def run_basic_workflow(
                 "coder": coder_result["result_data"]
             },
             "changes": coder_result["result_data"].get("changes", []),
-            "project_path": str(resolved_path),
+            "project_path": str(project_path),
             "workflow_run_id": workflow_id,
             "metrics": {
                 "discovery": discovery_result.get("metrics", {}),
