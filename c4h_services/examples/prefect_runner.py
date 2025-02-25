@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Extended Prefect runner supporting both CLI and API service mode execution.
+Streamlined Prefect runner focusing exclusively on workflow execution and API service.
 Path: c4h_services/examples/prefect_runner.py
 """
 
@@ -9,101 +9,38 @@ import sys
 root_dir = Path(__file__).parent.parent.parent
 sys.path.append(str(root_dir))
 
-import sys
 import uvicorn
-from c4h_services.src.api.service import app
-from c4h_services.src.api.models import WorkflowRequest
-
-from typing import Dict, Any, Optional, List
 import structlog
 import argparse
-from prefect import flow
-from rich.console import Console
-import yaml
 from enum import Enum
+import yaml
+from typing import Dict, Any, Optional, List
 
-# Now import c4h packages (which should now be found)
+# Import API components
+from c4h_services.src.api.service import create_app
+
+# Import workflow components
 from c4h_agents.config import deep_merge
-from c4h_agents.agents.discovery import DiscoveryAgent
-from c4h_agents.agents.solution_designer import SolutionDesigner
-from c4h_agents.agents.coder import Coder
-from c4h_agents.agents.assurance import AssuranceAgent
-from c4h_agents.skills.semantic_iterator import SemanticIterator
-from c4h_agents.skills.semantic_merge import SemanticMerge
-from c4h_agents.skills.semantic_extract import SemanticExtract
-from c4h_agents.skills.asset_manager import AssetManager
-from c4h_services.src.intent.impl.prefect.workflows import run_basic_workflow  # Import workflow functions
-from c4h_services.src.intent.impl.prefect.tasks import run_agent_task, AgentTaskConfig
+from c4h_services.src.intent.impl.prefect.workflows import run_basic_workflow
 
 logger = structlog.get_logger()
-
-class RunMode(str, Enum):
-    """Execution modes supported by runner"""
-    AGENT = "agent"     # Run single agent/skill
-    WORKFLOW = "workflow"  # Run full workflow
 
 class LogMode(str, Enum):
     """Logging modes supported by runner"""
     DEBUG = "debug"
     NORMAL = "normal"
 
-# Agent registry for individual runs
-AGENT_REGISTRY = {
-    "discovery": lambda config: AgentTaskConfig(
-        agent_class=DiscoveryAgent,
-        config=config,
-        task_name="discovery"
-    ),
-    "solution_designer": lambda config: AgentTaskConfig(
-        agent_class=SolutionDesigner,
-        config=config,
-        task_name="solution_designer"
-    ),
-    "coder": lambda config: AgentTaskConfig(
-        agent_class=Coder,
-        config=config,
-        task_name="coder"
-    ),
-    "assurance": lambda config: AgentTaskConfig(
-        agent_class=AssuranceAgent,
-        config=config,
-        task_name="assurance"
-    ),
-    "semantic_iterator": lambda config: AgentTaskConfig(
-        agent_class=SemanticIterator,
-        config={
-            **config,
-            "instruction": config.get('instruction', ''),
-            "format": config.get('format', 'json'),
-        },
-        task_name="semantic_iterator"
-    ),
-    "semantic_merge": lambda config: AgentTaskConfig(
-        agent_class=SemanticMerge,
-        config=config,
-        task_name="semantic_merge"
-    ),
-    "semantic_extract": lambda config: AgentTaskConfig(
-        agent_class=SemanticExtract,
-        config=config,
-        task_name="semantic_extract"
-    ),
-    "asset_manager": lambda config: AgentTaskConfig(
-        agent_class=AssetManager,
-        config=config,
-        task_name="asset_manager"
-    )
-}
-
-def load_configs(app_config_path: str, system_config_paths: Optional[List[str]] = None) -> Dict[str, Any]:
+def load_configs(app_config_path: Optional[str] = None, system_config_paths: Optional[List[str]] = None) -> Dict[str, Any]:
     """Load and merge configurations in proper order"""
     try:
-        with open(app_config_path) as f:
-            app_config = yaml.safe_load(f) or {}
-            
-        logger.info("config.content.loaded",
-                   app_config_keys=list(app_config.keys()),
-                   project_path=app_config.get('project', {}).get('path'))
+        app_config = {}
+        if app_config_path:
+            with open(app_config_path) as f:
+                app_config = yaml.safe_load(f) or {}
+                
+            logger.info("config.content.loaded",
+                      app_config_keys=list(app_config.keys()),
+                      project_path=app_config.get('project', {}).get('path'))
         
         merged_config = {}
         
@@ -116,10 +53,11 @@ def load_configs(app_config_path: str, system_config_paths: Optional[List[str]] 
                 with open(path) as f:
                     sys_config = yaml.safe_load(f) or {}
                     logger.debug("config.merge.system_config",
-                               path=str(path),
-                               config_keys=list(sys_config.keys()))
+                                path=str(path),
+                                config_keys=list(sys_config.keys()))
                     merged_config = deep_merge(merged_config, sys_config)
-        elif not merged_config:
+                    
+        elif not merged_config and app_config_path:  # Only look for default config if app config is provided
             default_paths = [
                 Path("config/system_config.yml"),
                 Path("../config/system_config.yml"),
@@ -136,14 +74,15 @@ def load_configs(app_config_path: str, system_config_paths: Optional[List[str]] 
                     with open(path) as f:
                         sys_config = yaml.safe_load(f) or {}
                         logger.debug("config.merge.default_system",
-                                   path=str(path),
-                                   config_keys=list(sys_config.keys()))
+                                    path=str(path),
+                                    config_keys=list(sys_config.keys()))
                         merged_config = deep_merge(merged_config, sys_config)
                     break
                     
         final_config = deep_merge(merged_config, app_config)
         
-        if 'llm_config' not in final_config:
+        # Ensure minimal config structure exists
+        if app_config_path and 'llm_config' not in final_config:
             logger.warning("config.no_llm_config_found",
                          final_keys=list(final_config.keys()))
             final_config['llm_config'] = {}
@@ -152,224 +91,154 @@ def load_configs(app_config_path: str, system_config_paths: Optional[List[str]] 
 
     except Exception as e:
         logger.error("config.load_failed", error=str(e))
-        raise
+        if app_config_path:  # Only raise if a config file was explicitly requested
+            raise
+        return {}
 
-@flow(name="prefect_runner")
-def run_flow(
-    mode: RunMode,
-    config: Dict[str, Any],
-    agent_type: Optional[str] = None,
-    extra_params: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    """Main flow for running agents or workflows"""
+def run_workflow(project_path: str, intent_desc: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
+    """Run a workflow with the provided configuration"""
     try:
-        if 'project' in config:
-            project_config = config['project']
-            if 'path' in project_config:
-                project_path = Path(project_config['path']).resolve()
-                project_config['path'] = str(project_path)
-                workspace_root = project_config.get('workspace_root')
-                if workspace_root and not Path(workspace_root).is_absolute():
-                    project_config['workspace_root'] = str(project_path / workspace_root)
-                logger.info("runner.project.paths",
-                    project_path=str(project_path),
-                    workspace_root=project_config.get('workspace_root'))
+        logger.info("workflow.starting",
+                   project_path=project_path,
+                   intent_keys=list(intent_desc.keys()) if intent_desc else {},
+                   config_keys=list(config.keys()) if config else {})
+                
+        # Process project path
+        if 'project' not in config:
+            config['project'] = {}
+        config['project']['path'] = project_path
+                
+        # Execute workflow using Prefect's run_basic_workflow
+        result = run_basic_workflow(
+            project_path=Path(project_path),
+            intent_desc=intent_desc,
+            config=config
+        )
         
-        context = {"input_data": config.get("input_data", {})}
-        
-        if 'project' in config:
-            context['project'] = config['project']
-            
-        if 'runtime' in config:
-            runtime_config = config['runtime']
-            if 'lineage' in runtime_config:
-                lineage_config = runtime_config['lineage']
-                if lineage_config.get('enabled', False):
-                    from prefect.context import get_run_context
-                    ctx = get_run_context()
-                    flow_id = None
-                    if ctx is not None and hasattr(ctx, "flow_run") and ctx.flow_run and hasattr(ctx.flow_run, "id"):
-                        flow_id = str(ctx.flow_run.id)
-                    if flow_id:
-                        context['workflow_run_id'] = flow_id
-                        logger.info("lineage.context_enhanced",
-                                  workflow_run_id=context['workflow_run_id'])
-        
-        if extra_params:
-            context.update(extra_params)
-
-        if mode == RunMode.AGENT:
-            if not agent_type or agent_type not in AGENT_REGISTRY:
-                raise ValueError(f"Invalid agent type: {agent_type}")
-            task_config = AGENT_REGISTRY[agent_type](config)
-            result = run_agent_task(
-                agent_config=task_config,
-                context=context,
-                task_name=f"test_{agent_type}"
-            )
-            return {
-                "success": True,
-                "result": result.result() if hasattr(result, "result") else result
-            }
-        else:
-            project_path = config.get('project', {}).get('path')
-            if not project_path:
-                project_path = config.get("project_path", ".")
-            result = run_basic_workflow(
-                project_path=Path(project_path),
-                intent_desc=config.get("intent", {}),
-                config=config
-            )
-            if hasattr(result, "result"):
-                workflow_result = result.result()
-            else:
-                workflow_result = result
-            return {
-                "success": True,
-                "result": workflow_result
-            }
+        logger.info("workflow.completed",
+                   workflow_id=result.get("workflow_run_id", "unknown"),
+                   status=result.get("status", "unknown"))
+                
+        return result
             
     except Exception as e:
-        logger.error("runner.failed", error=str(e))
+        error_msg = str(e)
+        logger.error("workflow.failed", error=error_msg, project_path=project_path)
         return {
-            "success": False,
-            "error": str(e),
-            "result": {}
+            "status": "error",
+            "error": error_msg,
+            "project_path": project_path,
+            "timestamp": None
         }
 
-def format_output(data: Dict[str, Any], mode: RunMode) -> None:
-    """Format task output for display"""
-    print("\n=== Results ===\n")
+def format_output(result: Dict[str, Any]) -> None:
+    """Format workflow results for display"""
+    print("\n=== Workflow Results ===\n")
     
     def print_value(value: Any, indent: int = 0) -> None:
         spaces = " " * indent
         if isinstance(value, dict):
             for k, v in value.items():
-                print(f"{spaces}{k}:")
-                print_value(v, indent + 4)
+                if k in ['stages', 'metrics']:
+                    print(f"{spaces}{k}: {{...}}")  # Summarize large nested structures
+                else:
+                    print(f"{spaces}{k}:")
+                    print_value(v, indent + 4)
         elif isinstance(value, list):
-            for item in value:
-                print_value(item, indent + 4)
+            if len(value) > 3:
+                print(f"{spaces}[{len(value)} items]")
+            else:
+                for item in value:
+                    print_value(item, indent + 4)
         else:
             print(f"{spaces}{value}")
     
     try:
-        if mode == RunMode.WORKFLOW:
-            if isinstance(data, str):
-                print(data)
-                return
-            result = data.result() if hasattr(data, 'result') else data
-            if isinstance(result, dict) and 'result' in result:
-                result_data = result['result']
-            elif isinstance(result, dict) and 'stages' in result:
-                result_data = {
-                    'status': 'success',
-                    'changes': result.get('changes', []),
-                    'stages': result.get('stages', {})
-                }
-            else:
-                result_data = result
+        status = result.get("status", "unknown")
+        print(f"Status: {status}")
+        
+        if status == "error":
+            print(f"Error: {result.get('error', 'Unknown error')}")
         else:
-            if isinstance(data, dict):
-                if 'success' in data and data['success']:
-                    if 'result' in data and isinstance(data['result'], dict):
-                        agent_data = data['result']
-                        if 'result_data' in agent_data:
-                            result_data = agent_data['result_data']
-                        else:
-                            result_data = agent_data
-                    else:
-                        result_data = data.get('result_data', data.get('result', {}))
-                else:
-                    result_data = {'error': data.get('error', 'Unknown error')}
-            else:
-                result_data = data
-
-        print_value(result_data)
+            print(f"Workflow ID: {result.get('workflow_run_id', 'unknown')}")
+            print(f"Project: {result.get('project_path', 'unknown')}")
+            print(f"Changes: {len(result.get('changes', []))} modifications")
+            
+            if 'execution_metadata' in result:
+                print("\nExecution Information:")
+                metadata = result['execution_metadata']
+                print(f"  Steps: {metadata.get('step_sequence', 0)}")
+                print(f"  Agents: {len(metadata.get('agent_sequence', []))}")
+                
+        print("\nComplete result structure:")
+        print_value(result, 2)
             
     except Exception as e:
         logger.error("output.format_failed", error=str(e))
         print(f"Error formatting output: {str(e)}")
         print("Raw data:")
-        print(str(data))
+        print(str(result))
 
 def main():
-    parser = argparse.ArgumentParser(description="Prefect runner for agents, workflows, and API service mode")
-    parser.add_argument("-S", "--service", action="store_true", help="Run in API service mode")
+    parser = argparse.ArgumentParser(description="Streamlined Prefect runner for workflows and API service")
+    parser.add_argument("mode", type=str, nargs="?", choices=["workflow", "service"], 
+                       default="service", help="Run mode (workflow or service)")
     parser.add_argument("-P", "--port", type=int, default=8000, help="Port number for API service mode")
     
-    # existing arguments...
-    parser.add_argument("mode", type=str, nargs="?", default="agent", choices=["agent", "workflow"], help="Run mode (agent or workflow)")
-    agent_choices = list(AGENT_REGISTRY.keys())
-    parser.add_argument(
-        "--agent",
-        choices=agent_choices,
-        metavar="AGENT",
-        help=f"""Agent type (required for agent mode). Available agents:
-                Core Agents: {', '.join(a for a in agent_choices if not a.startswith('semantic_'))}
-                Semantic Skills: {', '.join(a for a in agent_choices if a.startswith('semantic_'))}
-                Other Skills: {', '.join(a for a in agent_choices if not a.startswith('semantic_') and a not in ['discovery', 'solution_designer', 'coder', 'assurance'])}"""
-    )
-    parser.add_argument(
-        "--config",
-        required=True,
-        help="Path to application config file"
-    )
-    parser.add_argument(
-        "--system-configs",
-        nargs="+",
-        help="Optional system config files in merge order"
-    )
+    # Config parameters
+    parser.add_argument("--config", help="Path to application config file")
+    parser.add_argument("--system-configs", nargs="+", help="Optional system config files in merge order")
+    
+    # Workflow parameters
+    parser.add_argument("--project-path", help="Path to the project (required for workflow mode)")
+    parser.add_argument("--intent-file", help="Path to intent JSON file (required for workflow mode)")
+    
     parser.add_argument(
         "--log",
         type=LogMode,
         choices=list(LogMode),
         default=LogMode.NORMAL,
-        help="Logging mode"
-    )
-    parser.add_argument(
-        "--param",
-        action="append",
-        help="Additional parameters in key=value format",
-        default=[]
+        help="Logging level"
     )
 
     args = parser.parse_args()
 
-    if args.service:
+    # Service mode handling
+    if args.mode == "service":
+        # Create FastAPI app with empty default config
+        config = load_configs(args.config, args.system_configs)
+        app = create_app(default_config=config)
         print(f"Service mode enabled, running on port {args.port}")
         uvicorn.run(app, host="0.0.0.0", port=args.port)
         return
 
-    # Existing CLI workflow execution
+    # CLI workflow execution mode requires project path and intent
+    if not args.project_path:
+        parser.error("--project-path is required for workflow mode")
+        
+    if not args.intent_file:
+        parser.error("--intent-file is required for workflow mode")
+    
     try:
-        if args.mode == "agent" and not args.agent:
-            parser.error("Agent type is required for agent mode")
-
-        extra_params = {}
-        for param in args.param:
-            key, value = param.split("=", 1)
-            extra_params[key.strip()] = value.strip()
-
-        config = load_configs(
-            app_config_path=args.config,
-            system_config_paths=args.system_configs
-        )
-
-        result = run_flow(
-            mode=args.mode,
-            config=config,
-            agent_type=args.agent,
-            extra_params=extra_params
-        )
-
-##        format_output(result, args.mode)
-
-        if not result.get("success", False):
-            sys.exit(1)
-
+        # Load intent from file
+        with open(args.intent_file) as f:
+            intent_desc = yaml.safe_load(f)
     except Exception as e:
-        logger.error("runner.failed", error=str(e))
+        parser.error(f"Failed to load intent file: {str(e)}")
+
+    # Load and merge configurations
+    config = load_configs(args.config, args.system_configs)
+
+    # Run workflow
+    result = run_workflow(
+        project_path=args.project_path,
+        intent_desc=intent_desc,
+        config=config
+    )
+
+    format_output(result)
+
+    if result.get("status") != "success":
         sys.exit(1)
 
 if __name__ == "__main__":
