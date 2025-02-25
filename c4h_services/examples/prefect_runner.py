@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Extended Prefect runner supporting both individual agents and full workflow execution.
+Extended Prefect runner supporting both CLI and API service mode execution.
 Path: c4h_services/examples/prefect_runner.py
 """
 
-import sys
 from pathlib import Path
+import sys
+root_dir = Path(__file__).parent.parent.parent
+sys.path.append(str(root_dir))
 
-# Ensure that the project root (which contains c4h_agents and c4h_services) is in the module search path.
-# This assumes that the project root is three levels up from this file.
-root_dir = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(root_dir))
-# For debugging purposes, you can uncomment the following line to verify:
-# print("Project root added to sys.path:", root_dir)
+import sys
+import uvicorn
+from c4h_services.src.api.service import app
+from c4h_services.src.api.models import WorkflowRequest
 
 from typing import Dict, Any, Optional, List
 import structlog
@@ -294,15 +294,12 @@ def format_output(data: Dict[str, Any], mode: RunMode) -> None:
         print(str(data))
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Prefect runner for agents and workflows"
-    )
-    parser.add_argument(
-        "mode",
-        type=RunMode,
-        choices=list(RunMode),
-        help="Run mode (agent or workflow)"
-    )
+    parser = argparse.ArgumentParser(description="Prefect runner for agents, workflows, and API service mode")
+    parser.add_argument("-S", "--service", action="store_true", help="Run in API service mode")
+    parser.add_argument("-P", "--port", type=int, default=8000, help="Port number for API service mode")
+    
+    # existing arguments...
+    parser.add_argument("mode", type=str, nargs="?", default="agent", choices=["agent", "workflow"], help="Run mode (agent or workflow)")
     agent_choices = list(AGENT_REGISTRY.keys())
     parser.add_argument(
         "--agent",
@@ -336,13 +333,19 @@ def main():
         help="Additional parameters in key=value format",
         default=[]
     )
-    
+
     args = parser.parse_args()
-    
+
+    if args.service:
+        print(f"Service mode enabled, running on port {args.port}")
+        uvicorn.run(app, host="0.0.0.0", port=args.port)
+        return
+
+    # Existing CLI workflow execution
     try:
-        if args.mode == RunMode.AGENT and not args.agent:
+        if args.mode == "agent" and not args.agent:
             parser.error("Agent type is required for agent mode")
-            
+
         extra_params = {}
         for param in args.param:
             key, value = param.split("=", 1)
@@ -359,12 +362,12 @@ def main():
             agent_type=args.agent,
             extra_params=extra_params
         )
-        
-        format_output(result, args.mode)
-        
+
+##        format_output(result, args.mode)
+
         if not result.get("success", False):
             sys.exit(1)
-            
+
     except Exception as e:
         logger.error("runner.failed", error=str(e))
         sys.exit(1)
