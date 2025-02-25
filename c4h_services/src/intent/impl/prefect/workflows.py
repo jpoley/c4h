@@ -1,11 +1,11 @@
 """
 Path: c4h_services/src/intent/impl/prefect/workflows.py
-Core workflow implementation with enhanced configuration handling.
+Core workflow implementation with enhanced lineage tracking.
 """
 
 from prefect import flow, get_run_logger
 from prefect.context import get_run_context
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 import structlog
 from pathlib import Path
 from datetime import datetime, timezone
@@ -13,12 +13,15 @@ from copy import deepcopy
 import uuid
 
 from c4h_agents.config import create_config_node
+from c4h_agents.agents.lineage_context import LineageContext
 from .tasks import run_agent_task
 from .factories import (
     create_discovery_task,
     create_solution_task,
     create_coder_task
 )
+# Import the LineageContext utility
+from c4h_agents.agents.lineage_context import LineageContext
 
 logger = structlog.get_logger()
 
@@ -59,6 +62,28 @@ def prepare_workflow_config(base_config: Dict[str, Any]) -> Dict[str, Any]:
         
         # Also set at top level for direct access
         config['workflow_run_id'] = workflow_id
+        
+        # Set lineage tracking configuration
+        if 'llm_config' not in config:
+            config['llm_config'] = {}
+        
+        if 'agents' not in config['llm_config']:
+            config['llm_config']['agents'] = {}
+            
+        if 'lineage' not in config['llm_config']['agents']:
+            config['llm_config']['agents']['lineage'] = {}
+            
+        # Ensure lineage is enabled
+        config['llm_config']['agents']['lineage'].update({
+            'enabled': True,
+            'namespace': 'c4h_agents',
+            'event_detail_level': 'full',  # full, standard, or minimal
+            'separate_input_output': False, # Set to True for large payloads
+            'backend': {
+                'type': 'file',
+                'path': 'workspaces/lineage'
+            }
+        })
         
         logger.debug("workflow.config_prepared",
             workflow_id=workflow_id,
@@ -108,20 +133,28 @@ def run_basic_workflow(
         solution_config = create_solution_task(workflow_config)
         coder_config = create_coder_task(workflow_config)
         
-        # Create a standard context that ensures the workflow ID is present
-        base_context = {
-            "workflow_run_id": workflow_id,
-            "system": {"runid": workflow_id}  # Include system namespace directly
-        }
+        # Create a workflow context with proper lineage tracking
+        workflow_context = LineageContext.create_workflow_context(workflow_id)
         
-        # Run discovery with consistent project config
-        discovery_context = {
-            **base_context,
-            "project_path": str(project_path),
-            "project": workflow_config['project']  # Pass config directly
-        }
+        # Set step sequence for visualization and tracking
+        step_sequence = 0
+        
+        # Run discovery with proper lineage tracking context
+        step_sequence += 1
+        discovery_context = LineageContext.create_agent_context(
+            workflow_run_id=workflow_id,
+            agent_type="discovery",
+            step=step_sequence,
+            base_context={
+                "project_path": str(project_path),
+                "project": workflow_config['project']
+            }
+        )
+        
         logger.debug("workflow.discovery_context", 
                    workflow_id=workflow_id, 
+                   agent_execution_id=discovery_context.get("agent_execution_id"),
+                   step=step_sequence,
                    context_keys=list(discovery_context.keys()))
         
         discovery_result = run_agent_task(
@@ -135,20 +168,37 @@ def run_basic_workflow(
                 "error": discovery_result.get("error"),
                 "workflow_run_id": workflow_id,
                 "stage": "workflow",
-                "project_path": str(project_path)
+                "project_path": str(project_path),
+                "execution_metadata": {
+                    "agent_execution_id": discovery_context.get("agent_execution_id"),
+                    "step": step_sequence,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
             }
 
-        # Run solution design with consistent project config
-        solution_context = {
-            **base_context,
-            "input_data": {
-                "discovery_data": discovery_result["result_data"],
-                "intent": intent_desc,
-                "project": workflow_config['project']  # Pass config directly
+        # Extract discovery execution metadata
+        discovery_metadata = discovery_result.get("result_data", {}).get("execution_metadata", {})
+        discovery_agent_id = discovery_metadata.get("agent_execution_id")
+
+        # Run solution design with proper lineage tracking
+        step_sequence += 1
+        solution_context = LineageContext.create_agent_context(
+            workflow_run_id=workflow_id,
+            agent_type="solution_designer",
+            step=step_sequence,
+            base_context={
+                "input_data": {
+                    "discovery_data": discovery_result["result_data"],
+                    "intent": intent_desc,
+                    "project": workflow_config['project']
+                }
             }
-        }
+        )
+        
         logger.debug("workflow.solution_context", 
-                   workflow_id=workflow_id, 
+                   workflow_id=workflow_id,
+                   agent_execution_id=solution_context.get("agent_execution_id"),
+                   step=step_sequence,
                    context_keys=list(solution_context.keys()))
                     
         solution_result = run_agent_task(
@@ -164,17 +214,35 @@ def run_basic_workflow(
                 "workflow_run_id": workflow_id,
                 "project_path": str(project_path),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "discovery_data": discovery_result.get("result_data")
+                "discovery_data": discovery_result.get("result_data"),
+                "execution_metadata": {
+                    "agent_execution_id": solution_context.get("agent_execution_id"),
+                    "step": step_sequence,
+                    "previous_step": discovery_agent_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
             }
 
-        # Run coder with consistent project config
-        coder_context = {
-            **base_context,
-            "input_data": solution_result["result_data"],
-            "project": workflow_config['project']  # Pass config directly
-        }
+        # Extract solution execution metadata
+        solution_metadata = solution_result.get("result_data", {}).get("execution_metadata", {})
+        solution_agent_id = solution_metadata.get("agent_execution_id")
+
+        # Run coder with proper lineage tracking
+        step_sequence += 1
+        coder_context = LineageContext.create_agent_context(
+            workflow_run_id=workflow_id,
+            agent_type="coder",
+            step=step_sequence,
+            base_context={
+                "input_data": solution_result["result_data"],
+                "project": workflow_config['project']
+            }
+        )
+        
         logger.debug("workflow.coder_context", 
-                   workflow_id=workflow_id, 
+                   workflow_id=workflow_id,
+                   agent_execution_id=coder_context.get("agent_execution_id"),
+                   step=step_sequence,
                    context_keys=list(coder_context.keys()))
                     
         coder_result = run_agent_task(
@@ -191,10 +259,20 @@ def run_basic_workflow(
                 "project_path": str(project_path),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "discovery_data": discovery_result.get("result_data"),
-                "solution_data": solution_result.get("result_data")
+                "solution_data": solution_result.get("result_data"),
+                "execution_metadata": {
+                    "agent_execution_id": coder_context.get("agent_execution_id"),
+                    "step": step_sequence,
+                    "previous_step": solution_agent_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
             }
 
-        # Return workflow result with lineage context
+        # Extract coder execution metadata
+        coder_metadata = coder_result.get("result_data", {}).get("execution_metadata", {})
+        coder_agent_id = coder_metadata.get("agent_execution_id")
+
+        # Return workflow result with comprehensive lineage context
         return {
             "status": "success",
             "stages": {
@@ -213,6 +291,16 @@ def run_basic_workflow(
             "timestamps": {
                 "start": workflow_config["runtime"]["workflow"]["start_time"],
                 "end": datetime.now(timezone.utc).isoformat()
+            },
+            "execution_metadata": {
+                "workflow_run_id": workflow_id,
+                "step_sequence": step_sequence,
+                "agent_sequence": [
+                    {"agent": "discovery", "id": discovery_agent_id, "step": 1},
+                    {"agent": "solution_designer", "id": solution_agent_id, "step": 2},
+                    {"agent": "coder", "id": coder_agent_id, "step": 3}
+                ],
+                "execution_path": LineageContext.extract_lineage_info(coder_context).get("execution_path", [])
             }
         }
 
@@ -233,5 +321,11 @@ def run_basic_workflow(
             "workflow_run_id": workflow_id,
             "project_path": str(project_path),
             "stage": "workflow",
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "execution_metadata": {
+                "error": error_msg,
+                "error_type": type(e).__name__,
+                "workflow_run_id": workflow_id,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
         }
