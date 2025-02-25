@@ -11,7 +11,6 @@ from .models import AgentTaskConfig
 from c4h_agents.agents.discovery import DiscoveryAgent
 from c4h_agents.agents.solution_designer import SolutionDesigner 
 from c4h_agents.agents.coder import Coder
-from c4h_agents.core.project import Project
 from c4h_agents.config import create_config_node
 
 logger = structlog.get_logger()
@@ -76,7 +75,7 @@ def create_discovery_task(config: Dict[str, Any]) -> AgentTaskConfig:
     if tartxt_config:
         agent_config["tartxt_config"] = tartxt_config
 
-    # Discovery agent doesn't need project
+    # Discovery agent doesn't need project - it will create one if needed
     return AgentTaskConfig(
         agent_class=DiscoveryAgent,
         config=agent_config,
@@ -90,7 +89,7 @@ def create_solution_task(config: Dict[str, Any]) -> AgentTaskConfig:
     """Create solution designer task configuration."""
     agent_config = prepare_agent_config(config, "solution_designer")
 
-    # Solution designer doesn't need project
+    # Solution designer doesn't need project - it will create one if needed
     return AgentTaskConfig(
         agent_class=SolutionDesigner,
         config=agent_config,
@@ -114,36 +113,12 @@ def create_coder_task(config: Dict[str, Any]) -> AgentTaskConfig:
     else:
         agent_config["backup"] = {"enabled": True}
 
-    # Project handling needs its own scope for Coder only
-    project = None
-    try:
-        # Only create Project object for Coder agent
-        if 'project' in config:
-            project_config = config.get('project', {})
-            
-            # Create the project config dictionary
-            project_dict = {
-                'project': project_config,
-                'system': config.get('system', {}),
-                'workflow_run_id': config.get('workflow_run_id') or config.get('system', {}).get('runid')
-            }
-            
-            # Create Project object from config
-            project = Project.from_config(project_dict)
-            
-            logger.info("coder_factory.project_initialized",
-                       project_path=str(project.paths.root),
-                       workspace_root=str(project.paths.workspace),
-                       has_system=bool(config.get('system')))
-    except Exception as e:
-        logger.error("coder_factory.project_creation_failed", error=str(e))
-
+    # No Project object creation here - Coder will create it from config if needed
     return AgentTaskConfig(
         agent_class=Coder,
         config=agent_config,
         task_name="coder",
         requires_approval=True,
         max_retries=1,
-        retry_delay_seconds=60,
-        project=project  # Only Coder gets project
+        retry_delay_seconds=60
     )

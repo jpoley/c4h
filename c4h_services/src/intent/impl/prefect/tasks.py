@@ -84,18 +84,9 @@ def run_agent_task(
             'task_retry_count': agent_config.max_retries
         }
         
-        # Create the agent with only the parameters it supports
-        # Only Coder agent expects project parameter
-        if task_name == "coder" and hasattr(agent_config, 'project'):
-            agent = agent_config.agent_class(
-                config=agent_config.config,
-                project=agent_config.project
-            )
-        else:
-            # All other agents don't use project parameter
-            agent = agent_config.agent_class(
-                config=agent_config.config
-            )
+        # Create the agent with configuration only
+        # Each agent will create its own Project instance if needed
+        agent = agent_config.agent_class(config=agent_config.config)
 
         # Special handling for iterator
         if isinstance(agent, SemanticIterator):

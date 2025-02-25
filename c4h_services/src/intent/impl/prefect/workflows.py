@@ -133,13 +133,13 @@ def run_basic_workflow(
         if 'project' not in workflow_config:
             workflow_config['project'] = {}
             
-        # Update project config with resolved paths
+        # Update project config with resolved paths - only configuration here, no domain objects
         workflow_config['project'].update({
             'path': str(resolved_path),
             'workspace_root': config_node.get_value("project.workspace_root") or "workspaces"
         })
         
-        # Configure agents with workflow context
+        # Configure agent tasks - each agent will create its own Project object if needed
         discovery_config = create_discovery_task(workflow_config)
         solution_config = create_solution_task(workflow_config)
         coder_config = create_coder_task(workflow_config)
