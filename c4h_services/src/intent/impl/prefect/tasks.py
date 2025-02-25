@@ -1,6 +1,6 @@
 """
 Path: c4h_services/src/intent/impl/prefect/tasks.py
-Task wrapper implementation with proper run ID and context propagation.
+Task wrapper implementation with enhanced configuration handling.
 """
 
 from typing import Dict, Any, Optional
@@ -12,6 +12,7 @@ from pathlib import Path
 from c4h_agents.agents.base_agent import BaseAgent
 from c4h_agents.skills.semantic_iterator import SemanticIterator
 from c4h_agents.skills.shared.types import ExtractConfig
+from c4h_agents.config import create_config_node
 from .models import AgentTaskConfig
 
 logger = structlog.get_logger()
@@ -26,44 +27,65 @@ def run_agent_task(
     prefect_logger = get_run_logger()
     
     try:
-        # Ensure agent configuration has system.runid set
-        if 'system' not in agent_config.config:
-            agent_config.config['system'] = {}
+        # Get task name from config or parameter
+        task_name = task_name or agent_config.task_name
+        
+        # Create configuration nodes for hierarchical access
+        config_node = create_config_node(agent_config.config)
+        context_node = create_config_node(context)
+        
+        # Get the run ID with priority order using path queries
+        run_id = (
+            # 1. Context parameters (highest priority)
+            context_node.get_value("workflow_run_id") or 
+            context_node.get_value("system.runid") or
+            # 2. Prefect flow context
+            str(flow_run.get_id()) or
+            # 3. Agent config
+            config_node.get_value("workflow_run_id") or
+            config_node.get_value("system.runid") or
+            # 4. Runtime config (backward compatibility)
+            config_node.get_value("runtime.workflow_run_id") or
+            config_node.get_value("runtime.run_id")
+        )
             
-        # Initialize agent with complete config
-        agent = agent_config.agent_class(config=agent_config.config)
+        # Initialize agent with the prepared configuration
         task_name = task_name or agent_config.task_name
 
-        # Ensure workflow run ID propagation using hierarchy:
-        # 1. Context workflow_run_id
-        # 2. Flow run ID
-        # 3. Runtime config run_id
-        run_id = (
-            context.get('workflow_run_id') or 
-            str(flow_run.get_id()) or
-            agent_config.config.get('runtime', {}).get('run_id') or
-            agent_config.config.get('system', {}).get('runid')
-        )
-        
         if not run_id:
             logger.warning("task.missing_run_id", 
                 task=task_name,
-                context_keys=list(context.keys()))
-        else:
-            # Set the run ID in both places to ensure it's found
-            agent_config.config['system']['runid'] = run_id
-            if 'workflow_run_id' not in context:
-                context['workflow_run_id'] = run_id
+                context_keys=list(context.keys()),
+                config_keys=list(agent_config.config.keys()))
+            # Create a fallback ID if nothing was found
+            run_id = "fallback_" + str(flow_run.get_id())
+        
+        # Ensure run ID is set in both configuration locations
+        if "system" not in agent_config.config:
+            agent_config.config["system"] = {}
+        agent_config.config["system"]["runid"] = run_id
+        agent_config.config["workflow_run_id"] = run_id
+        
+        # Log the configuration for debugging
+        logger.debug("task.agent_config_prepared", 
+                    task=task_name,
+                    run_id=run_id,
+                    config_has_system=bool(agent_config.config.get("system")),
+                    context_has_workflow_run_id=bool(context.get("workflow_run_id")))
 
         prefect_logger.info(f"Running {task_name} task with run_id: {run_id}")
 
-        # Enhance context with task metadata
+        # Enhance context with task metadata and ensure run ID is set
         enhanced_context = {
             **context,
             'workflow_run_id': run_id,
+            'system': {'runid': run_id},  # Explicitly include system namespace
             'task_name': task_name,
             'task_retry_count': agent_config.max_retries
         }
+        
+        # Create the agent with prepared config
+        agent = agent_config.agent_class(config=agent_config.config)
 
         # Special handling for iterator
         if isinstance(agent, SemanticIterator):

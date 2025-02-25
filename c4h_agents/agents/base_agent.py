@@ -1,5 +1,6 @@
 """
 Base agent implementation.
+Path: c4h_agents/agents/base_agent.py
 """
 
 from typing import Dict, Any, Optional, List, Tuple
@@ -9,7 +10,7 @@ from pathlib import Path
 from datetime import datetime
 
 from c4h_agents.core.project import Project
-from c4h_agents.config import locate_keys
+from c4h_agents.config import create_config_node
 from .base_lineage import BaseLineage
 from .types import LogDetail, LLMProvider, LLMMessages, AgentResponse, AgentMetrics
 from .base_config import BaseConfig, log_operation
@@ -24,25 +25,31 @@ class BaseAgent(BaseConfig, BaseLLM):
         # Pass full config to BaseConfig
         super().__init__(config=config, project=project)
         
-        # Use the full configuration instead of extracting a subtree
-        full_config = self.config
+        # Create configuration node for hierarchical access
+        self.config_node = create_config_node(self.config)
         agent_name = self._get_agent_name()
         
-        # Resolve provider, model, and temperature using hierarchical lookup.
-        provider_name = self.lookup(f"{agent_name}/provider") or self.config.get("llm_config", {}).get("default_provider", "anthropic")
+        # Ensure system namespace exists
+        if "system" not in self.config:
+            self.config["system"] = {}
+            
+        # Resolve provider, model, and temperature using hierarchical lookup
+        agent_path = f"llm_config.agents.{agent_name}"
+        provider_name = self.config_node.get_value(f"{agent_path}.provider") or self.config_node.get_value("llm_config.default_provider") or "anthropic"
         self.provider = LLMProvider(provider_name)
-        self.model = self.lookup(f"{agent_name}/model") or self.config.get("llm_config", {}).get("default_model", "claude-3-opus-20240229")
-        self.temperature = self.lookup(f"{agent_name}/temperature") or 0
+        
+        self.model = self.config_node.get_value(f"{agent_path}.model") or self.config_node.get_value("llm_config.default_model") or "claude-3-opus-20240229"
+        self.temperature = self.config_node.get_value(f"{agent_path}.temperature") or 0
         
         # Continuation settings
-        self.max_continuation_attempts = self.lookup(f"{agent_name}/max_continuation_attempts") or 5
-        self.continuation_token_buffer = self.lookup(f"{agent_name}/continuation_token_buffer") or 1000
+        self.max_continuation_attempts = self.config_node.get_value(f"{agent_path}.max_continuation_attempts") or 5
+        self.continuation_token_buffer = self.config_node.get_value(f"{agent_path}.continuation_token_buffer") or 1000
         
         # Initialize metrics
         self.metrics = AgentMetrics(project=self.project.metadata.name if self.project else None)
         
         # Set logging detail level from config
-        log_level = self.config.get('logging', {}).get('agent_level', 'basic')
+        log_level = self.config_node.get_value("logging.agent_level") or "basic"
         self.log_level = LogDetail.from_str(log_level)
         
         # Build model string and setup LiteLLM
@@ -68,6 +75,14 @@ class BaseAgent(BaseConfig, BaseLLM):
         # Initialize lineage tracking with the full configuration
         self.lineage = None
         try:
+            # Log what run_id we're using
+            run_id = self._get_workflow_run_id()
+            if run_id:
+                logger.debug(f"{agent_name}.using_workflow_run_id", 
+                            run_id=run_id, 
+                            source="config", 
+                            config_keys=list(self.config.keys()))
+            
             self.lineage = BaseLineage(
                 namespace="c4h_agents",
                 agent_name=agent_name,
@@ -82,6 +97,25 @@ class BaseAgent(BaseConfig, BaseLLM):
                         "token_buffer": self.continuation_token_buffer
                     },
                     **log_context)
+
+    def _get_workflow_run_id(self) -> Optional[str]:
+        """Extract workflow run ID from configuration using hierarchical path queries"""
+        # Check hierarchical sources in order of priority
+        run_id = (
+            # 1. Direct context parameter (highest priority)
+            self.config_node.get_value("workflow_run_id") or
+            # 2. System namespace
+            self.config_node.get_value("system.runid") or
+            # 3. Runtime configuration (backward compatibility)
+            self.config_node.get_value("runtime.workflow_run_id") or
+            self.config_node.get_value("runtime.run_id") or
+            # 4. Workflow section 
+            self.config_node.get_value("runtime.workflow.id")
+        )
+        
+        if run_id:
+            return str(run_id)
+        return None
 
     def process(self, context: Dict[str, Any]) -> AgentResponse:
         """Main process entry point"""

@@ -1,6 +1,6 @@
 """
 Path: c4h_services/src/intent/impl/prefect/workflows.py
-Core workflow implementation with proper run ID propagation.
+Core workflow implementation with enhanced configuration handling.
 """
 
 from prefect import flow, get_run_logger
@@ -13,6 +13,7 @@ from copy import deepcopy
 import uuid
 
 from c4h_agents.core.project import Project
+from c4h_agents.config import create_config_node
 from .tasks import run_agent_task
 from .factories import (
     create_discovery_task,
@@ -23,7 +24,10 @@ from .factories import (
 logger = structlog.get_logger()
 
 def prepare_workflow_config(base_config: Dict[str, Any]) -> Dict[str, Any]:
-    """Prepare workflow configuration with proper run ID and context"""
+    """
+    Prepare workflow configuration with proper run ID and context.
+    Uses hierarchical configuration access.
+    """
     try:
         # Get workflow run ID from Prefect context
         ctx = get_run_context()
@@ -36,8 +40,7 @@ def prepare_workflow_config(base_config: Dict[str, Any]) -> Dict[str, Any]:
         # Deep copy to avoid mutations
         config = deepcopy(base_config)
         
-        # First, set the run ID at the root system namespace to ensure all components
-        # can find it consistently, following Config Design Principles
+        # First, set the run ID at the root system namespace 
         if 'system' not in config:
             config['system'] = {}
         config['system']['runid'] = workflow_id
@@ -55,7 +58,7 @@ def prepare_workflow_config(base_config: Dict[str, Any]) -> Dict[str, Any]:
             }
         })
         
-        # Also set at top level for agents that might check there
+        # Also set at top level for direct access
         config['workflow_run_id'] = workflow_id
         
         logger.debug("workflow.config_prepared",
@@ -69,10 +72,16 @@ def prepare_workflow_config(base_config: Dict[str, Any]) -> Dict[str, Any]:
         raise
 
 def resolve_project_path(project_path: Path, config: Dict[str, Any]) -> Path:
-    """Resolve project path from config or provided path"""
+    """
+    Resolve project path from config or provided path.
+    Uses path-based configuration access.
+    """
     try:
+        # Create configuration node
+        config_node = create_config_node(config)
+        
         # Check config first
-        config_project_path = config.get('project', {}).get('path')
+        config_project_path = config_node.get_value("project.path")
         if config_project_path:
             project_dir = Path(config_project_path).resolve()
         else:
@@ -99,16 +108,21 @@ def run_basic_workflow(
     intent_desc: Dict[str, Any],
     config: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Basic workflow implementing the core refactoring steps"""
+    """
+    Basic workflow implementing the core refactoring steps.
+    Uses hierarchical configuration access for consistent run ID propagation.
+    """
     run_logger = get_run_logger()
     
     try:
         # Prepare workflow configuration with proper run ID propagation
         workflow_config = prepare_workflow_config(config)
         
+        # Create configuration node for path-based access
+        config_node = create_config_node(workflow_config)
+        
         # Log the workflow ID for debugging
-        ctx = get_run_context()
-        workflow_id = workflow_config['system']['runid']
+        workflow_id = config_node.get_value("system.runid")
         logger.info("workflow.initialized", 
                    flow_id=workflow_id,
                    project_path=str(project_path))
@@ -118,10 +132,14 @@ def run_basic_workflow(
             project_config = {
                 'project': {
                     'path': str(project_path.resolve()),
-                    'workspace_root': workflow_config.get('project', {}).get('workspace_root', 'workspaces')
-                }
+                    'workspace_root': config_node.get_value("project.workspace_root") or "workspaces"
+                },
+                # Explicitly include the system namespace with run ID
+                'system': workflow_config.get('system', {}),
+                'workflow_run_id': workflow_id
             }
             project = Project.from_config(project_config)
+            # Ensure the project has the workflow ID information
             workflow_config['project'] = project
         except Exception as e:
             logger.error("workflow.project_init_failed", error=str(e))
@@ -132,17 +150,28 @@ def run_basic_workflow(
         solution_config = create_solution_task(workflow_config)
         coder_config = create_coder_task(workflow_config)
         
+        # Create a standard context that ensures the workflow ID is present
+        base_context = {
+            "workflow_run_id": workflow_id,
+            "system": {"runid": workflow_id}  # Include system namespace directly
+        }
+        
         # Run discovery with lineage context
+        discovery_context = {
+            **base_context,
+            "project_path": str(project_path),
+            "project": {
+                "path": str(project_path),
+                "workspace_root": project.paths.workspace
+            }
+        }
+        logger.debug("workflow.discovery_context", 
+                    workflow_id=workflow_id, 
+                    context_keys=list(discovery_context.keys()))
+        
         discovery_result = run_agent_task(
             agent_config=discovery_config,
-            context={
-                "project_path": str(project_path),
-                "workflow_run_id": workflow_id,  # Explicitly pass the workflow ID
-                "project": {
-                    "path": str(project_path),
-                    "workspace_root": project.paths.workspace
-                }
-            }
+            context=discovery_context
         )
 
         if not discovery_result.get("success"):
@@ -155,19 +184,24 @@ def run_basic_workflow(
             }
 
         # Run solution design with lineage context
+        solution_context = {
+            **base_context,
+            "input_data": {
+                "discovery_data": discovery_result["result_data"],
+                "intent": intent_desc,
+                "project": {
+                    "path": str(project_path),
+                    "workspace_root": project.paths.workspace
+                }
+            }
+        }
+        logger.debug("workflow.solution_context", 
+                    workflow_id=workflow_id, 
+                    context_keys=list(solution_context.keys()))
+                    
         solution_result = run_agent_task(
             agent_config=solution_config,
-            context={
-                "input_data": {
-                    "discovery_data": discovery_result["result_data"],
-                    "intent": intent_desc,
-                    "project": {
-                        "path": str(project_path),
-                        "workspace_root": project.paths.workspace
-                    }
-                },
-                "workflow_run_id": workflow_id  # Explicitly pass the workflow ID
-            }
+            context=solution_context
         )
 
         if not solution_result.get("success"):
@@ -182,16 +216,21 @@ def run_basic_workflow(
             }
 
         # Run coder with lineage context
+        coder_context = {
+            **base_context,
+            "input_data": solution_result["result_data"],
+            "project": {
+                "path": str(project_path),
+                "workspace_root": project.paths.workspace
+            }
+        }
+        logger.debug("workflow.coder_context", 
+                    workflow_id=workflow_id, 
+                    context_keys=list(coder_context.keys()))
+                    
         coder_result = run_agent_task(
             agent_config=coder_config,
-            context={
-                "input_data": solution_result["result_data"],
-                "workflow_run_id": workflow_id,  # Explicitly pass the workflow ID
-                "project": {
-                    "path": str(project_path),
-                    "workspace_root": project.paths.workspace
-                }
-            }
+            context=coder_context
         )
 
         if not coder_result.get("success"):

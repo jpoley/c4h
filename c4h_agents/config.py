@@ -3,14 +3,168 @@ Configuration handling with robust dictionary access and path resolution.
 Path: c4h_agents/config.py
 """
 import yaml
-from typing import Dict, Any, Optional, List, Tuple, Union
+from typing import Dict, Any, Optional, List, Tuple, Union, Iterator, Pattern
 from pathlib import Path
 import structlog
 from copy import deepcopy
 import collections.abc
 import json
+import fnmatch
+import re
 
 logger = structlog.get_logger()
+
+class ConfigNode:
+    """
+    Node-based configuration access with hierarchical path support.
+    Provides relative path queries and wildcard matching.
+    """
+    def __init__(self, data: Dict[str, Any], base_path: str = ""):
+        """
+        Initialize config node with data and optional base path.
+        
+        Args:
+            data: Dictionary containing configuration
+            base_path: Optional base path for this node (for logging)
+        """
+        self.data = data
+        self.base_path = base_path
+
+    def get_value(self, path: str) -> Any:
+        """
+        Get value at specified path relative to this node.
+        
+        Args:
+            path: Dot-delimited path string, may include wildcards (*)
+            
+        Returns:
+            Value at the path, or None if not found
+        """
+        # Handle direct access
+        if not path:
+            return self.data
+            
+        # Handle path with wildcards
+        if '*' in path:
+            matches = list(self._find_wildcard_matches(path))
+            if len(matches) == 1:
+                return matches[0][1]  # Return the single matched value
+            elif len(matches) > 1:
+                logger.warning("config.multiple_wildcard_matches", 
+                              path=path, 
+                              matches=len(matches),
+                              returning="first_match")
+                return matches[0][1]  # Return first match
+            return None
+            
+        # Standard path access
+        path_parts = path.split('.')
+        return get_by_path(self.data, path_parts)
+
+    def get_node(self, path: str) -> 'ConfigNode':
+        """
+        Get configuration node at specified path.
+        
+        Args:
+            path: Dot-delimited path string, may include wildcards (*)
+            
+        Returns:
+            ConfigNode at the path, or empty node if not found
+        """
+        if not path:
+            return self
+            
+        value = self.get_value(path)
+        if isinstance(value, dict):
+            full_path = f"{self.base_path}.{path}" if self.base_path else path
+            return ConfigNode(value, full_path)
+        else:
+            logger.warning("config.node_path_not_dict", 
+                          path=path, 
+                          value_type=type(value).__name__)
+            return ConfigNode({}, path)
+
+    def find_all(self, path_pattern: str) -> List[Tuple[str, Any]]:
+        """
+        Find all values matching a path pattern with wildcards.
+        
+        Args:
+            path_pattern: Dot-delimited path with wildcards
+            
+        Returns:
+            List of (path, value) tuples for all matches
+        """
+        return list(self._find_wildcard_matches(path_pattern))
+
+    def _find_wildcard_matches(self, path_pattern: str) -> Iterator[Tuple[str, Any]]:
+        """
+        Iterator for all values matching a wildcard pattern.
+        
+        Args:
+            path_pattern: Dot-delimited path with wildcards
+            
+        Yields:
+            Tuples of (path, value) for each match
+        """
+        path_parts = path_pattern.split('.')
+        
+        def _search_recursive(data: Dict[str, Any], current_parts: List[str], 
+                             current_path: List[str]) -> Iterator[Tuple[str, Any]]:
+            # Base case: no more parts to match
+            if not current_parts:
+                yield '.'.join(current_path), data
+                return
+                
+            current_part = current_parts[0]
+            remaining_parts = current_parts[1:]
+            
+            # Handle wildcards
+            if current_part == '*':
+                # Match any key at this level
+                if isinstance(data, dict):
+                    for key, value in data.items():
+                        yield from _search_recursive(value, remaining_parts, current_path + [key])
+            elif '*' in current_part:
+                # Pattern matching within this level
+                pattern = fnmatch.translate(current_part)
+                regex = re.compile(pattern)
+                if isinstance(data, dict):
+                    for key, value in data.items():
+                        if regex.match(key):
+                            yield from _search_recursive(value, remaining_parts, current_path + [key])
+            else:
+                # Exact key match
+                if isinstance(data, dict) and current_part in data:
+                    yield from _search_recursive(data[current_part], remaining_parts, 
+                                              current_path + [current_part])
+        
+        yield from _search_recursive(self.data, path_parts, [])
+
+    def __getitem__(self, key: str) -> Any:
+        """
+        Dictionary-style access to configuration values.
+        
+        Args:
+            key: Simple key or dot-delimited path
+            
+        Returns:
+            Value at the specified path
+        """
+        return self.get_value(key)
+
+    def __contains__(self, key: str) -> bool:
+        """
+        Check if a key exists in this node.
+        
+        Args:
+            key: Simple key or dot-delimited path
+            
+        Returns:
+            True if the key exists, False otherwise
+        """
+        return self.get_value(key) is not None
+
+# Original functions enhanced to work with the new approach
 
 def get_by_path(data: Dict[str, Any], path: List[str]) -> Any:
     """
@@ -48,16 +202,22 @@ def get_by_path(data: Dict[str, Any], path: List[str]) -> Any:
 
 def get_value(data: Dict[str, Any], path_str: str) -> Any:
     """
-    Access dictionary data using a hierarchical path string (e.g. "system/runid").
+    Access dictionary data using a hierarchical path string (e.g. "system.runid").
+    Supports both dots (.) and slashes (/) as path separators.
     
     Args:
         data: Dictionary to traverse
-        path_str: Slash-delimited key path
+        path_str: Delimited key path (using dots or slashes)
         
     Returns:
         Value at the specified path or None if not found.
     """
-    path_list = path_str.split("/")
+    # Handle both dot and slash notation for backward compatibility
+    if '/' in path_str:
+        path_list = path_str.split('/')
+    else:
+        path_list = path_str.split('.')
+        
     return get_by_path(data, path_list)
 
 def locate_keys(data: Dict[str, Any], target_keys: List[str], current_path: List[str] = None) -> Dict[str, Tuple[Any, List[str]]]:
@@ -119,13 +279,32 @@ def locate_config(config: Dict[str, Any], target_name: str) -> Dict[str, Any]:
         Located config dictionary or empty dict if not found
     """
     try:
-        standard_path = ['llm_config', 'agents', target_name]
-        result = get_by_path(config, standard_path)
-        if result is not None:
-            if isinstance(result, dict):
-                logger.debug("config.located_in_hierarchy", target=target_name, path=standard_path, found_keys=list(result.keys()))
-                return result
-        logger.warning("config.not_found_in_hierarchy", target=target_name, searched_path=standard_path)
+        # Use the ConfigNode for more advanced lookup
+        config_node = ConfigNode(config)
+        standard_path = f"llm_config.agents.{target_name}"
+        result = config_node.get_value(standard_path)
+        
+        if result is not None and isinstance(result, dict):
+            logger.debug("config.located_in_hierarchy", 
+                        target=target_name, 
+                        path=standard_path, 
+                        found_keys=list(result.keys()))
+            return result
+            
+        # Try wildcard search as fallback
+        wildcard_path = f"*.agents.{target_name}"
+        matches = config_node.find_all(wildcard_path)
+        if matches:
+            result_path, result_value = matches[0]
+            logger.debug("config.located_with_wildcard", 
+                        target=target_name, 
+                        path=result_path, 
+                        found_keys=list(result_value.keys()))
+            return result_value
+            
+        logger.warning("config.not_found_in_hierarchy", 
+                      target=target_name, 
+                      searched_path=standard_path)
         return {}
     except Exception as e:
         logger.error("config.locate_failed", target=target_name, error=str(e))
@@ -212,3 +391,15 @@ def load_with_app_config(system_path: Path, app_path: Path) -> Dict[str, Any]:
     except Exception as e:
         logger.error("config.merge.failed", error=str(e), error_type=type(e).__name__)
         return {}
+
+def create_config_node(config: Dict[str, Any]) -> ConfigNode:
+    """
+    Create a ConfigNode from a configuration dictionary.
+    
+    Args:
+        config: Configuration dictionary
+        
+    Returns:
+        ConfigNode for easy hierarchical access
+    """
+    return ConfigNode(config)

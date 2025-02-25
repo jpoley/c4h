@@ -12,12 +12,14 @@ from c4h_agents.agents.discovery import DiscoveryAgent
 from c4h_agents.agents.solution_designer import SolutionDesigner 
 from c4h_agents.agents.coder import Coder
 from c4h_agents.core.project import Project
+from c4h_agents.config import create_config_node
 
 logger = structlog.get_logger()
 
 def prepare_agent_config(config: Dict[str, Any], agent_section: str) -> Dict[str, Any]:
     """
     Prepare standard agent configuration following hierarchy.
+    Now uses path-based configuration access.
     
     Args:
         config: Complete configuration dictionary
@@ -26,26 +28,53 @@ def prepare_agent_config(config: Dict[str, Any], agent_section: str) -> Dict[str
     Returns:
         Dictionary with agent configuration
     """
-    # Get agent-specific config
-    agent_config = config.get("llm_config", {}).get("agents", {}).get(agent_section, {})
+    # Create a configuration node for path-based access
+    config_node = create_config_node(config)
     
-    # Build complete config
-    return {
-        "llm_config": config.get("llm_config", {}),
-        "logging": config.get("logging", {}),
-        "providers": config.get("providers", {}),
-        "runtime": config.get("runtime", {}),
-        **agent_config  # Agent-specific overrides last
-    }
+    # Get workflow run ID from hierarchical path queries
+    workflow_run_id = (
+        config_node.get_value("workflow_run_id") or
+        config_node.get_value("system.runid") or
+        config_node.get_value("runtime.workflow_run_id") or
+        config_node.get_value("runtime.run_id") or
+        config_node.get_value("runtime.workflow.id")
+    )
+    
+    # Pass through the full configuration, but ensure critical elements exist
+    complete_config = config.copy()
+    
+    # Ensure system namespace exists
+    if "system" not in complete_config:
+        complete_config["system"] = {}
+        
+    # Ensure workflow run ID is set in system namespace
+    if workflow_run_id:
+        complete_config["system"]["runid"] = workflow_run_id
+        # Also set at top level for direct access
+        complete_config["workflow_run_id"] = workflow_run_id
+    
+    # Log the configuration preparation
+    agent_node = config_node.get_node(f"llm_config.agents.{agent_section}")
+    logger.debug(f"{agent_section}.config_prepared", 
+                has_system=bool(complete_config.get("system")),
+                system_runid=complete_config.get("system", {}).get("runid"),
+                workflow_run_id=workflow_run_id,
+                agent_config_keys=list(agent_node.data.keys()) if agent_node.data else [])
+    
+    return complete_config
 
 def create_discovery_task(config: Dict[str, Any]) -> AgentTaskConfig:
     """Create discovery agent task configuration."""
     agent_config = prepare_agent_config(config, "discovery")
     
-    # Add tartxt config if present
-    discovery_config = config.get("llm_config", {}).get("agents", {}).get("discovery", {})
-    if "tartxt_config" in discovery_config:
-        agent_config["tartxt_config"] = discovery_config["tartxt_config"]
+    # Create config node for path-based access
+    config_node = create_config_node(config)
+    discovery_config = config_node.get_node("llm_config.agents.discovery")
+    
+    # Add tartxt config if present using path queries
+    tartxt_config = discovery_config.get_value("tartxt_config")
+    if tartxt_config:
+        agent_config["tartxt_config"] = tartxt_config
 
     return AgentTaskConfig(
         agent_class=DiscoveryAgent,
@@ -73,9 +102,13 @@ def create_coder_task(config: Dict[str, Any]) -> AgentTaskConfig:
     """Create coder agent task configuration."""
     agent_config = prepare_agent_config(config, "coder")
     
+    # Create config node for path-based access
+    config_node = create_config_node(config)
+    
     # Add backup config if present
-    if "backup" in config:
-        agent_config["backup"] = config["backup"]
+    backup_config = config_node.get_value("backup")
+    if backup_config:
+        agent_config["backup"] = backup_config
     else:
         agent_config["backup"] = {"enabled": True}
 
@@ -87,11 +120,19 @@ def create_coder_task(config: Dict[str, Any]) -> AgentTaskConfig:
             if isinstance(project_config, Project):
                 project = project_config
             else:
-                project = Project.from_config(config)
+                # When creating a project config, include the system namespace with runid
+                project_dict = {
+                    'project': project_config,
+                    'system': config.get('system', {}),  # Include system config for lineage
+                    'workflow_run_id': config.get('workflow_run_id') or config.get('system', {}).get('runid')
+                }
+                    
+                project = Project.from_config(project_dict)
                 
             logger.info("coder_factory.project_initialized",
                        project_path=str(project.paths.root),
-                       workspace_root=str(project.paths.workspace))
+                       workspace_root=str(project.paths.workspace),
+                       has_system=bool(config.get('system')))
     except Exception as e:
         logger.error("coder_factory.project_creation_failed", error=str(e))
 

@@ -22,7 +22,7 @@ except ImportError:
     OPENLINEAGE_AVAILABLE = False
 
 from c4h_agents.agents.types import LLMMessages
-from c4h_agents.config import locate_config, get_value
+from c4h_agents.config import create_config_node
 
 logger = structlog.get_logger()
 
@@ -45,20 +45,28 @@ class BaseLineage:
         self.agent_name = agent_name
         self.enabled = False
         
-        # Get lineage config first
-        lineage_config = locate_config(config or {}, "lineage")
+        # Create a configuration node for hierarchical access
+        config_node = create_config_node(config or {})
+        
+        # Debug log the configuration structure
+        logger.debug(f"{agent_name}.lineage_init", 
+                     has_system=config_node.get_value("system") is not None,
+                     has_workflow_run_id=config_node.get_value("workflow_run_id") is not None,
+                     has_runtime=config_node.get_value("runtime") is not None)
+        
+        # Get lineage config using path query
+        lineage_config = config_node.get_value("llm_config.agents.lineage") or {}
+        if not lineage_config:
+            # Try runtime path as fallback
+            lineage_config = config_node.get_value("runtime.lineage") or {}
+            
         if not lineage_config:
             logger.info(f"{agent_name}.lineage_disabled", reason="no_config")
             return
             
-        # Prioritize runid from system namespace, then check hierarchical paths using a more robust approach
-        self.run_id = self._extract_run_id(config)
-        
-        # Log a warning if we're still generating a UUID
-        if self.run_id.startswith("generated:"):
-            logger.warning("lineage.missing_run_id", agent=agent_name, generated_id=self.run_id[10:])
-        else:
-            logger.debug("lineage.using_run_id", agent=agent_name, run_id=self.run_id)
+        # Extract run ID using hierarchical path queries
+        self.run_id = self._extract_run_id(config_node)
+        logger.debug(f"{agent_name}.using_run_id", run_id=self.run_id)
 
         # Set minimal defaults for lineage configuration
         self.config = {
@@ -79,50 +87,43 @@ class BaseLineage:
         try:
             base_dir = Path(self.config["backend"]["path"])
             date_str = datetime.now().strftime('%Y%m%d')
-            
-            # Extract only the UUID part if it has a prefix
-            clean_run_id = self.run_id[10:] if self.run_id.startswith("generated:") else self.run_id
-            
-            self.lineage_dir = base_dir / date_str / clean_run_id
+            self.lineage_dir = base_dir / date_str / self.run_id
             self.lineage_dir.mkdir(parents=True, exist_ok=True)
             
             # Create directories under run_id
             (self.lineage_dir / "events").mkdir(exist_ok=True)
             (self.lineage_dir / "errors").mkdir(exist_ok=True)
             
-            logger.info("lineage.storage_initialized", path=str(self.lineage_dir), run_id=clean_run_id)
+            logger.info("lineage.storage_initialized", path=str(self.lineage_dir), run_id=self.run_id)
         except Exception as e:
             logger.error("lineage.storage_init_failed", error=str(e))
             self.enabled = False
 
-    def _extract_run_id(self, config: Dict[str, Any]) -> str:
+    def _extract_run_id(self, config_node) -> str:
         """
-        Extract run ID using a hierarchical approach with fallbacks.
-        Returns a string with a "generated:" prefix if we had to generate one.
+        Extract run ID using hierarchical path queries.
+        Returns a stable run ID from the first available source.
         """
-        # First check system namespace (highest priority)
-        run_id = get_value(config, "system/runid")
+        # Query potential run ID locations in priority order
+        run_id = (
+            # 1. System namespace (highest priority)
+            config_node.get_value("system.runid") or
+            # 2. Direct context parameter
+            config_node.get_value("workflow_run_id") or 
+            # 3. Runtime configuration
+            config_node.get_value("runtime.workflow_run_id") or
+            config_node.get_value("runtime.run_id") or
+            # 4. Workflow section
+            config_node.get_value("runtime.workflow.id")
+        )
+        
         if run_id:
             return str(run_id)
             
-        # Then check context parameters (second priority)
-        if isinstance(config.get('workflow_run_id'), (str, uuid.UUID)):
-            return str(config.get('workflow_run_id'))
-            
-        # Then check runtime configuration (third priority)
-        runtime = config.get('runtime', {})
-        if isinstance(runtime.get('workflow_run_id'), (str, uuid.UUID)):
-            return str(runtime.get('workflow_run_id'))
-        if isinstance(runtime.get('run_id'), (str, uuid.UUID)):
-            return str(runtime.get('run_id'))
-        
-        # Finally fallback to workflow.id if present
-        workflow = runtime.get('workflow', {})
-        if isinstance(workflow.get('id'), (str, uuid.UUID)):
-            return str(workflow.get('id'))
-            
-        # Generate a UUID as last resort, but prefix it to indicate it was generated
-        return f"generated:{uuid.uuid4()}"
+        # Generate new UUID as fallback
+        generated_id = str(uuid.uuid4())
+        logger.warning("lineage.missing_run_id", agent=self.agent_name, generated_id=generated_id)
+        return generated_id
 
     def _serialize_value(self, value: Any) -> Any:
         """Serialize a single value with type handling"""
@@ -184,10 +185,9 @@ class BaseLineage:
             return
             
         try:
-            # Extract workflow_run_id from context if available
-            parent_run_id = None
-            if isinstance(context, dict):
-                parent_run_id = context.get('workflow_run_id')
+            # Extract workflow_run_id from context using configuration node
+            context_node = create_config_node(context)
+            parent_run_id = context_node.get_value("workflow_run_id")
             
             event = LineageEvent(
                 input_context=context,
