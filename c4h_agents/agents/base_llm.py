@@ -46,6 +46,14 @@ class BaseLLM:
             if self.provider.value != "openai":
                 completion_params["temperature"] = self.temperature
             
+            # Add any model-specific parameters from config
+            model_params = provider_config.get("model_params", {})
+            if model_params:
+                logger.debug("llm.applying_model_params", 
+                            provider=self.provider.serialize(),
+                            params=list(model_params.keys()))
+                completion_params.update(model_params)
+            
             if "api_base" in provider_config:
                 completion_params["api_base"] = provider_config["api_base"]
 
