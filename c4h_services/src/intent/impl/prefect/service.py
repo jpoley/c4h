@@ -12,7 +12,7 @@ from prefect.client import get_client
 from prefect.deployments import Deployment
 
 from c4h_agents.config import load_config, load_with_app_config
-from .workflows import run_basic_workflow
+from .flows import run_intent_workflow, run_recovery_workflow, run_rollback_workflow
 
 logger = structlog.get_logger()
 
@@ -56,11 +56,12 @@ class PrefectIntentService:
 
             # Execute workflow
             flow_run = await self.client.create_flow_run(
-                flow=run_basic_workflow,
+                flow=run_intent_workflow,
                 parameters={
                     "project_path": project_path,
                     "intent_desc": intent_desc,
-                    "config": self.config
+                    "config": self.config,
+                    "max_iterations": max_iterations
                 }
             )
             
@@ -97,7 +98,7 @@ class PrefectIntentService:
             }
 
     async def get_status(self, intent_id: str) -> Dict[str, Any]:
-        """Get status of a workflow run"""
+        """Get status from Prefect flow run"""
         try:
             # Get flow run state
             flow_run = await self.client.read_flow_run(intent_id)
@@ -122,7 +123,7 @@ class PrefectIntentService:
             }
 
     async def cancel_intent(self, intent_id: str) -> bool:
-        """Cancel a running workflow"""
+        """Cancel Prefect flow run"""
         try:
             await self.client.set_flow_run_state(
                 flow_run_id=intent_id,
@@ -135,3 +136,35 @@ class PrefectIntentService:
         except Exception as e:
             logger.error("cancel.failed", error=str(e), intent_id=intent_id)
             return False
+
+    async def create_deployment(
+        self,
+        name: str,
+        schedule: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a deployment for the intent workflow.
+        Enables scheduling and remote execution.
+        """
+        try:
+            deployment = await Deployment.build_from_flow(
+                flow=run_intent_workflow,
+                name=name,
+                schedule=schedule,
+                work_queue_name="intent_refactor"
+            )
+            
+            await deployment.apply()
+            
+            return {
+                "status": "success",
+                "deployment_id": deployment.id,
+                "name": deployment.name
+            }
+            
+        except Exception as e:
+            logger.error("deployment.failed", error=str(e))
+            return {
+                "status": "error",
+                "error": str(e)
+            }

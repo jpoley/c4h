@@ -15,6 +15,7 @@ import argparse
 from enum import Enum
 import yaml
 from typing import Dict, Any, Optional, List
+import json
 
 # Import API components
 from c4h_services.src.api.service import create_app
@@ -40,7 +41,8 @@ def load_configs(app_config_path: Optional[str] = None, system_config_paths: Opt
                 
             logger.info("config.content.loaded",
                       app_config_keys=list(app_config.keys()),
-                      project_path=app_config.get('project', {}).get('path'))
+                      project_path=app_config.get('project', {}).get('path'),
+                      has_intent=('intent' in app_config))
         
         merged_config = {}
         
@@ -95,9 +97,17 @@ def load_configs(app_config_path: Optional[str] = None, system_config_paths: Opt
             raise
         return {}
 
-def run_workflow(project_path: str, intent_desc: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
+def run_workflow(project_path: Optional[str], intent_desc: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
     """Run a workflow with the provided configuration"""
     try:
+        # Get project path from config if not provided as argument
+        if not project_path:
+            project_path = config.get('project', {}).get('path')
+            if project_path:
+                logger.info("workflow.using_project_from_config", project_path=project_path)
+            else:
+                raise ValueError("No project path specified in arguments or config")
+                
         logger.info("workflow.starting",
                    project_path=project_path,
                    intent_keys=list(intent_desc.keys()) if intent_desc else {},
@@ -190,8 +200,8 @@ def main():
     parser.add_argument("--system-configs", nargs="+", help="Optional system config files in merge order")
     
     # Workflow parameters
-    parser.add_argument("--project-path", help="Path to the project (required for workflow mode)")
-    parser.add_argument("--intent-file", help="Path to intent JSON file (required for workflow mode)")
+    parser.add_argument("--project-path", help="Path to the project (optional if defined in config)")
+    parser.add_argument("--intent-file", help="Path to intent JSON file (optional if intent defined in config)")
     
     parser.add_argument(
         "--log",
@@ -212,22 +222,31 @@ def main():
         uvicorn.run(app, host="0.0.0.0", port=args.port)
         return
 
-    # CLI workflow execution mode requires project path and intent
-    if not args.project_path:
-        parser.error("--project-path is required for workflow mode")
-        
-    if not args.intent_file:
-        parser.error("--intent-file is required for workflow mode")
-    
-    try:
-        # Load intent from file
-        with open(args.intent_file) as f:
-            intent_desc = yaml.safe_load(f)
-    except Exception as e:
-        parser.error(f"Failed to load intent file: {str(e)}")
-
-    # Load and merge configurations
+    # Load and merge configurations first to potentially get project path and intent
     config = load_configs(args.config, args.system_configs)
+    
+    # Check if project path is available in config when not provided as argument
+    if not args.project_path and not config.get('project', {}).get('path'):
+        parser.error("--project-path is required when not defined in config")
+    
+    # Get intent from file or config
+    intent_desc = {}
+    
+    if args.intent_file:
+        try:
+            with open(args.intent_file) as f:
+                if args.intent_file.endswith('.json'):
+                    intent_desc = json.load(f)
+                else:
+                    intent_desc = yaml.safe_load(f)
+        except Exception as e:
+            parser.error(f"Failed to load intent file: {str(e)}")
+    elif 'intent' in config:
+        intent_desc = config.get('intent', {})
+        logger.info("workflow.using_intent_from_config", 
+                    intent_keys=list(intent_desc.keys()) if intent_desc else {})
+    else:
+        parser.error("--intent-file is required when intent is not defined in config")
 
     # Run workflow
     result = run_workflow(
