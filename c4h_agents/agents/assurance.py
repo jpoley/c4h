@@ -4,7 +4,6 @@ Path: src/agents/assurance.py
 """
 
 from typing import Dict, Any, Optional, List
-import structlog
 from pathlib import Path
 import subprocess
 import sys
@@ -14,9 +13,10 @@ import shutil
 import os
 from config import locate_config
 from c4h_agents.agents.base_agent import BaseAgent, AgentResponse 
+from c4h_agents.utils.logging import get_logger
 
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 @dataclass
 class ValidationResult:

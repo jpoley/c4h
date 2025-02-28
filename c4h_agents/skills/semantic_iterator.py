@@ -4,7 +4,6 @@ Path: c4h_agents/skills/semantic_iterator.py
 """
 
 from typing import List, Dict, Any, Optional, Iterator, Union
-import structlog
 from dataclasses import dataclass
 import json
 from config import locate_config
@@ -13,8 +12,9 @@ from skills.shared.types import ExtractConfig
 from skills._semantic_fast import FastExtractor, FastItemIterator
 from skills._semantic_slow import SlowExtractor, SlowItemIterator
 from enum import Enum
+from c4h_agents.utils.logging import get_logger
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 class ExtractionComplete(StopIteration):
     """Custom exception to signal clean completion of extraction"""

@@ -4,7 +4,6 @@ Path: src/agents/discovery.py
 """
 
 from typing import Dict, Any, Optional, List
-import structlog
 import subprocess
 import sys
 from pathlib import Path
@@ -12,8 +11,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from c4h_agents.agents.base_agent import BaseAgent, AgentResponse 
 from config import locate_config
-
-logger = structlog.get_logger()
+from c4h_agents.utils.logging import get_logger
 
 @dataclass
 class DiscoveryResult:

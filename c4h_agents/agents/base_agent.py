@@ -12,13 +12,14 @@ import uuid
 
 from c4h_agents.core.project import Project
 from c4h_agents.config import create_config_node
+from c4h_agents.utils.logging import get_logger
 from .base_lineage import BaseLineage
 from .lineage_context import LineageContext
 from .types import LogDetail, LLMProvider, LLMMessages, AgentResponse, AgentMetrics
 from .base_config import BaseConfig, log_operation
 from .base_llm import BaseLLM
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 class BaseAgent(BaseConfig, BaseLLM):
     """Base agent implementation"""
@@ -137,9 +138,6 @@ class BaseAgent(BaseConfig, BaseLLM):
         """Main process entry point"""
         return self._process(context)
 
-    # In file: c4h_agents/agents/base_agent.py
-    # Add this method to the BaseAgent class
-
     def _prepare_lineage_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         Prepare context with appropriate lineage tracking IDs.
@@ -173,9 +171,6 @@ class BaseAgent(BaseConfig, BaseLLM):
                 agent_type=self._get_agent_name(),
                 base_context=context
             )
-
-    # In file: c4h_agents/agents/base_agent.py
-    # Replace or modify the _process method
 
     def _process(self, context: Dict[str, Any]) -> AgentResponse:
         try:
@@ -428,9 +423,6 @@ class BaseAgent(BaseConfig, BaseLLM):
             raise ValueError(f"No prompt template found for type: {prompt_type}")
         return prompts[prompt_type]
 
-    # In file: c4h_agents/agents/base_agent.py
-    # Add this method to the BaseAgent class
-
     def call_skill(self, skill_name: str, skill_context: Dict[str, Any]) -> Dict[str, Any]:
         """
         Call a skill with proper lineage tracking.
@@ -464,4 +456,3 @@ class BaseAgent(BaseConfig, BaseLLM):
                     skill=skill_name)
             # If lineage context fails, fall back to original context
             return skill_context
-

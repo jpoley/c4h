@@ -6,15 +6,15 @@ Path: c4h_agents/skills/asset_manager.py
 from pathlib import Path
 from typing import Optional, Dict, Any, Union
 from dataclasses import dataclass
-import structlog
 import shutil
 import os
 from datetime import datetime
 
 from c4h_agents.agents.base_agent import BaseAgent, AgentResponse 
 from c4h_agents.skills.semantic_merge import SemanticMerge
+from c4h_agents.utils.logging import get_logger
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 @dataclass
 class AssetResult:

@@ -4,12 +4,10 @@ Path: c4h_agents/skills/semantic_formatter.py
 """
 
 from typing import Dict, Any, Optional
-import structlog
 from dataclasses import dataclass
 from datetime import datetime
 from c4h_agents.agents.base_agent import BaseAgent, AgentResponse 
-
-logger = structlog.get_logger()
+from c4h_agents.utils.logging import get_logger
 
 @dataclass
 class FormatResult:

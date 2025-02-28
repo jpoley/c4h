@@ -4,13 +4,11 @@ Path: c4h_agents/skills/_semantic_slow.py
 """
 
 from typing import Dict, Any, Optional 
-import structlog
 from c4h_agents.agents.base_agent import BaseAgent, AgentResponse 
 from skills.shared.types import ExtractConfig
 import json
 from config import locate_config
-
-logger = structlog.get_logger()
+from c4h_agents.utils.logging import get_logger
 
 class ExtractionError(Exception):
     """Custom exception for extraction errors"""

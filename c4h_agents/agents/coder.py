@@ -4,7 +4,6 @@ Path: c4h_agents/agents/coder.py
 """
 from typing import Dict, Any
 from dataclasses import dataclass
-import structlog
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,8 +11,7 @@ from c4h_agents.agents.base_agent import BaseAgent, AgentResponse
 from c4h_agents.skills.semantic_merge import SemanticMerge
 from c4h_agents.skills.semantic_iterator import SemanticIterator
 from c4h_agents.skills.asset_manager import AssetManager
-
-logger = structlog.get_logger()
+from c4h_agents.utils.logging import get_logger
 
 @dataclass 
 class CoderMetrics:

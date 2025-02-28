@@ -1,5 +1,3 @@
-# File: c4h_agents/agents/lineage_context.py
-
 """
 Lineage context management for agent coordination.
 Path: c4h_agents/agents/lineage_context.py
@@ -7,12 +5,10 @@ Path: c4h_agents/agents/lineage_context.py
 
 from typing import Dict, Any, Optional, List
 import uuid
-import structlog
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
-
-logger = structlog.get_logger()
+from c4h_agents.utils.logging import get_logger
 
 class LineageContext:
     """
