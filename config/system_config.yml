@@ -422,6 +422,102 @@ llm_config:
           4. Determine overall validation status
           5. Provide clear validation summary
 
+# Default teams and lineage configuration
+orchestration:
+  enabled: true
+  entry_team: "discovery"  # First team to execute
+  error_handling:
+    retry_teams: true
+    max_retries: 2
+    log_level: "ERROR"
+  teams:
+    # Discovery team - analyzes project structure
+    discovery:
+      name: "Discovery Team"
+      tasks:
+        - name: "discovery"
+          agent_class: "c4h_agents.agents.discovery.DiscoveryAgent"
+          requires_approval: false
+          max_retries: 2
+      routing:
+        default: "solution"  # Go to solution team next
+    
+    # Solution team - designs code changes
+    solution:
+      name: "Solution Design Team"
+      tasks:
+        - name: "solution_designer"
+          agent_class: "c4h_agents.agents.solution_designer.SolutionDesigner"
+          requires_approval: true
+          max_retries: 1
+      routing:
+        rules:
+          - condition: "all_success"
+            next_team: "coder"
+          - condition: "any_failure"
+            next_team: "fallback"
+        default: "coder"  # Default next team
+    
+    # Coder team - implements code changes
+    coder:
+      name: "Coder Team"
+      tasks:
+        - name: "coder"
+          agent_class: "c4h_agents.agents.coder.Coder"
+          requires_approval: true
+          max_retries: 1
+      routing:
+        rules:
+          - condition: "all_success"
+            next_team: null  # End workflow on success
+        default: null  # End workflow by default
+    
+    # Fallback team - handles failures with simplified approach
+    fallback:
+      name: "Fallback Team"
+      tasks:
+        - name: "fallback_coder"
+          agent_class: "c4h_agents.agents.coder.Coder"
+          config:
+            temperature: 0  # Lower temperature for more conservative changes
+      routing:
+        default: null  # End workflow after fallback
+
+# Runtime configuration for workflow and lineage
+runtime:
+  # Workflow storage configuration
+  workflow:
+    storage:
+      enabled: true
+      root_dir: "workspaces/workflows"
+      format: "yymmdd_hhmm_{workflow_id}"
+      retention:
+        max_runs: 10
+        max_days: 30
+      error_handling:
+        ignore_storage_errors: true
+        log_level: "ERROR"
+  # Lineage tracking configuration
+  lineage:
+    enabled: true
+    namespace: "c4h_agents"
+    separate_input_output: true
+    backend:
+      type: "file"  # File-based storage is more reliable for initial testing
+      path: "workspaces/lineage"  # Use explicit relative path
+    error_handling:
+      ignore_failures: true  # Don't let lineage errors affect workflow
+      log_level: "ERROR"
+    context:
+      include_metrics: true
+      include_token_usage: true
+      record_timestamps: true
+
+# Backup settings
+backup:
+  enabled: true
+  path: "workspaces/backups"  # Default backup path
+
 logging:
   level: "debug"  
   format: "structured"

@@ -143,6 +143,7 @@ class Orchestrator:
         logger.info("orchestrator.default_teams_loaded", 
                   teams=["discovery", "solution", "coder"])
     
+    # Path: c4h_services/src/orchestration/orchestrator.py
     def execute_workflow(
         self, 
         entry_team: str = "discovery",
@@ -175,13 +176,12 @@ class Orchestrator:
         context["workflow_run_id"] = workflow_run_id
         
         logger.info("orchestrator.workflow_starting", 
-                  entry_team=entry_team,
-                  workflow_run_id=workflow_run_id)
+                entry_team=entry_team,
+                workflow_run_id=workflow_run_id)
         
         # Track execution path
         execution_path = []
         team_results = {}
-        workflow_data = {}
         
         # Initial setup
         current_team_id = entry_team
@@ -205,56 +205,36 @@ class Orchestrator:
                 
             team = self.teams[current_team_id]
             logger.info("orchestrator.executing_team", 
-                      team_id=current_team_id,
-                      step=team_count + 1)
-                      
+                    team_id=current_team_id,
+                    step=team_count + 1)
+                    
             # Track this team in the execution path
             execution_path.append(current_team_id)
             
-            # Clone context to avoid mutations affecting other teams
-            team_context = context.copy()
-            
-            # Prepare the context based on workflow sequence
-            if current_team_id == "solution" and workflow_data:
-                # Structure data according to solution_designer expectations
-                if "input_data" not in team_context:
-                    team_context["input_data"] = {}
-                
-                # Check if we have discovery_data to pass along
-                if "discovery_data" in workflow_data:
-                    team_context["input_data"]["discovery_data"] = workflow_data["discovery_data"]
-                    
-                # Ensure intent is passed to solution designer
-                if "intent" in context and "intent" not in team_context["input_data"]:
-                    team_context["input_data"]["intent"] = context["intent"]
-            
-            elif current_team_id == "coder" and workflow_data:
-                # If we have result from solution designer, pass it through as input_data
-                if "result_data" in workflow_data:
-                    team_context["input_data"] = workflow_data["result_data"]
-                    
             # Execute the team
-            team_result = team.execute(team_context)
+            team_result = team.execute(context)
             
             # Store team result
             team_results[current_team_id] = team_result
             
-            # Update workflow data based on team results
-            if team_result.get("success", False) and "data" in team_result:
-                # Store team-specific data for next teams
-                if current_team_id == "discovery":
-                    workflow_data["discovery_data"] = team_result["data"]
-                elif current_team_id == "solution":
-                    workflow_data["result_data"] = team_result["data"]
+            # Update context with team result data
+            if team_result.get("success", False):
+                # Handle standard data
+                if "data" in team_result:
+                    context.update(team_result["data"])
+                    final_result["data"].update(team_result["data"])
                 
-                # Also update the final result data
-                final_result["data"].update(team_result["data"])
+                # Handle special structured input_data for team-to-team communication
+                if "input_data" in team_result:
+                    if "input_data" not in context:
+                        context["input_data"] = {}
+                    context["input_data"] = team_result["input_data"]
             
             # Check for failure
             if not team_result.get("success", False):
                 logger.warning("orchestrator.team_execution_failed",
-                             team_id=current_team_id,
-                             error=team_result.get("error"))
+                            team_id=current_team_id,
+                            error=team_result.get("error"))
                 final_result["status"] = "error"
                 final_result["error"] = team_result.get("error")
                 break
@@ -266,8 +246,8 @@ class Orchestrator:
             # Check if we've reached the end
             if not current_team_id:
                 logger.info("orchestrator.workflow_completed",
-                          teams_executed=team_count,
-                          final_team=team.team_id)
+                        teams_executed=team_count,
+                        final_team=team.team_id)
                 break
         
         # Check if we hit the team limit
@@ -283,8 +263,9 @@ class Orchestrator:
         final_result["timestamp"] = datetime.now(timezone.utc).isoformat()
         
         logger.info("orchestrator.workflow_result", 
-                  status=final_result["status"],
-                  teams_executed=team_count,
-                  execution_path=execution_path)
-                  
+                status=final_result["status"],
+                teams_executed=team_count,
+                execution_path=execution_path)
+                
         return final_result
+

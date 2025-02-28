@@ -27,6 +27,7 @@ class Team:
         self.default_next = config.get("routing", {}).get("default", None)
         
     @flow(name="team_flow")
+    # Path: c4h_services/src/orchestration/team.py
     def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute this team's agents in sequence.
@@ -47,9 +48,9 @@ class Team:
             # Execute each agent task in sequence
             for i, task_config in enumerate(self.tasks):
                 logger.info("team.task_executing", 
-                          team_id=self.team_id, 
-                          task_name=task_config.task_name, 
-                          task_index=i)
+                        team_id=self.team_id, 
+                        task_name=task_config.task_name, 
+                        task_index=i)
                 
                 # Add team context to the task execution
                 task_context = {
@@ -70,8 +71,8 @@ class Team:
                 # Stop sequence on failure if configured
                 if not result.get("success", False) and self.config.get("stop_on_failure", True):
                     logger.warning("team.task_failed_stopping_sequence", 
-                                 team_id=self.team_id,
-                                 task_name=task_config.task_name)
+                                team_id=self.team_id,
+                                task_name=task_config.task_name)
                     team_result["success"] = False
                     team_result["error"] = result.get("error")
                     break
@@ -89,11 +90,23 @@ class Team:
             team_result["data"] = team_data
             team_result["next_team"] = next_team
             
+            # Special handling for team-to-team data passing
+            if self.team_id == "discovery" and next_team == "solution":
+                # Structure the data as expected by the solution designer
+                team_result["input_data"] = {
+                    "discovery_data": team_data,
+                    "intent": context.get("intent", {}),
+                    "project": context.get("project", {})
+                }
+            elif self.team_id == "solution" and next_team == "coder":
+                # Structure data from solution to coder
+                team_result["input_data"] = team_data
+            
             logger.info("team.execution_completed", 
-                       team_id=self.team_id, 
-                       success=team_result["success"],
-                       next_team=next_team)
-                       
+                    team_id=self.team_id, 
+                    success=team_result["success"],
+                    next_team=next_team)
+                    
             return team_result
             
         except Exception as e:
@@ -105,7 +118,7 @@ class Team:
                 "data": {},
                 "next_team": None
             }
-    
+        
     def _determine_next_team(self, results: List[Dict[str, Any]], context: Dict[str, Any]) -> Optional[str]:
         """
         Determine the next team to execute based on routing rules and results.
