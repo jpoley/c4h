@@ -141,54 +141,6 @@ def run_workflow(project_path: Optional[str], intent_desc: Dict[str, Any], confi
             "timestamp": None
         }
 
-def format_output(result: Dict[str, Any]) -> None:
-    """Format workflow results for display"""
-    print("\n=== Workflow Results ===\n")
-    
-    def print_value(value: Any, indent: int = 0) -> None:
-        spaces = " " * indent
-        if isinstance(value, dict):
-            for k, v in value.items():
-                if k in ['stages', 'metrics']:
-                    print(f"{spaces}{k}: {{...}}")  # Summarize large nested structures
-                else:
-                    print(f"{spaces}{k}:")
-                    print_value(v, indent + 4)
-        elif isinstance(value, list):
-            if len(value) > 3:
-                print(f"{spaces}[{len(value)} items]")
-            else:
-                for item in value:
-                    print_value(item, indent + 4)
-        else:
-            print(f"{spaces}{value}")
-    
-    try:
-        status = result.get("status", "unknown")
-        print(f"Status: {status}")
-        
-        if status == "error":
-            print(f"Error: {result.get('error', 'Unknown error')}")
-        else:
-            print(f"Workflow ID: {result.get('workflow_run_id', 'unknown')}")
-            print(f"Project: {result.get('project_path', 'unknown')}")
-            print(f"Changes: {len(result.get('changes', []))} modifications")
-            
-            if 'execution_metadata' in result:
-                print("\nExecution Information:")
-                metadata = result['execution_metadata']
-                print(f"  Steps: {metadata.get('step_sequence', 0)}")
-                print(f"  Agents: {len(metadata.get('agent_sequence', []))}")
-                
-        print("\nComplete result structure:")
-        print_value(result, 2)
-            
-    except Exception as e:
-        logger.error("output.format_failed", error=str(e))
-        print(f"Error formatting output: {str(e)}")
-        print("Raw data:")
-        print(str(result))
-
 def main():
     parser = argparse.ArgumentParser(description="Streamlined Prefect runner for workflows and API service")
     parser.add_argument("mode", type=str, nargs="?", choices=["workflow", "service"], 
@@ -254,8 +206,6 @@ def main():
         intent_desc=intent_desc,
         config=config
     )
-
-    format_output(result)
 
     if result.get("status") != "success":
         sys.exit(1)

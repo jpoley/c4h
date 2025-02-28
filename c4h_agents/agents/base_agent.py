@@ -205,8 +205,8 @@ class BaseAgent(BaseConfig, BaseLLM):
                             system_length=len(system_message),
                             user_length=len(user_message),
                             agent_execution_id=agent_execution_id,
-                            system=system_message[:500] + "..." if len(system_message) > 500 else system_message,
-                            user_message=user_message[:500] + "..." if len(user_message) > 500 else user_message)
+                            system=system_message[:10] + "..." if len(system_message) > 10 else system_message,
+                            user_message=user_message[:10] + "..." if len(user_message) > 10 else user_message)
                             
             # Create complete messages object for LLM and lineage tracking
             messages = LLMMessages(

@@ -57,6 +57,14 @@ class BaseLLM:
             if "api_base" in provider_config:
                 completion_params["api_base"] = provider_config["api_base"]
 
+            # Check if we're dealing with JSON
+            is_json_context = any(
+                "json" in msg.get("content", "").lower() or
+                msg.get("content", "").strip().startswith("{") or 
+                msg.get("content", "").strip().startswith("[") 
+                for msg in messages if msg.get("role") == "user"
+            )
+
             while attempt < max_tries:
                 if attempt > 0:
                     logger.info("llm.continuation_attempt",
@@ -78,17 +86,39 @@ class BaseLLM:
                     # Process response through standard interface
                     result = self._process_response(response, response)
                     final_response = response
-                    accumulated_content += result['response']
+                    
+                    # For JSON responses, handle joining carefully
+                    current_content = result['response']
+                    if is_json_context and attempt > 0:
+                        # If this appears to be JSON, ensure clean joining
+                        if accumulated_content.rstrip().endswith(",") and current_content.lstrip().startswith(","):
+                            # Remove duplicate comma
+                            accumulated_content = accumulated_content.rstrip()
+                            current_content = current_content.lstrip()[1:].lstrip()
+                    
+                    accumulated_content += current_content
                     
                     finish_reason = getattr(response.choices[0], 'finish_reason', None)
                         
                     if finish_reason == 'length':
                         logger.info("llm.length_limit_reached", attempt=attempt)
                         messages.append({"role": "assistant", "content": result['response']})
-                        messages.append({
-                            "role": "user", 
-                            "content": "Continue exactly from where you left off, maintaining exact format and indentation. Do not repeat any content."
-                        })
+                        
+                        # Choose appropriate continuation prompt
+                        if is_json_context:
+                            continuation_prompt = (
+                                "Continue the JSON response exactly from where you left off. "
+                                "Make sure your response starts with a valid JSON fragment that "
+                                "will connect seamlessly with what you've already provided. "
+                                "Do not repeat any content."
+                            )
+                        else:
+                            continuation_prompt = (
+                                "Continue exactly from where you left off, maintaining exact format and indentation. "
+                                "Do not repeat any content."
+                            )
+                        
+                        messages.append({"role": "user", "content": continuation_prompt})
                         completion_params["messages"] = messages
                         attempt += 1
                         continue
@@ -99,6 +129,7 @@ class BaseLLM:
                         break
 
                 except litellm.InternalServerError as e:
+                    # Handle overload errors with exponential backoff
                     error_data = str(e)
                     if "overloaded_error" in error_data:
                         retry_count += 1
