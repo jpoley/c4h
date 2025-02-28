@@ -12,6 +12,11 @@ llm_config:
         - "claude-3-opus-20240229"
         - "claude-3-sonnet-20240229"
         - "claude-3-haiku-20240307"
+      extended_thinking:
+        enabled: false
+        budget_tokens: 32000
+        min_budget_tokens: 1024
+        max_budget_tokens: 128000        
       litellm_params:
         retry: true
         max_retries: 5

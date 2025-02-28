@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
 Streamlined Prefect runner focusing exclusively on workflow execution and API service.
-Path: c4h_services/examples/prefect_runner.py
+Path: c4h_services/src/bootstrap/prefect_runner.py
 """
 
 from pathlib import Path
 import sys
-root_dir = Path(__file__).parent.parent.parent
-sys.path.append(str(root_dir))
+import os
+
+# Add the project root to the Python path
+# We need to go up enough levels to include both c4h_services and c4h_agents
+script_path = Path(__file__).resolve()
+project_root = script_path.parent.parent.parent.parent  # Go up to the project root
+sys.path.append(str(project_root))
 
 import uvicorn
 import structlog
@@ -17,10 +22,8 @@ import yaml
 from typing import Dict, Any, Optional, List
 import json
 
-# Import API components
+# Now imports should work correctly
 from c4h_services.src.api.service import create_app
-
-# Import workflow components
 from c4h_agents.config import deep_merge
 from c4h_services.src.intent.impl.prefect.workflows import run_basic_workflow
 
@@ -63,11 +66,11 @@ def load_configs(app_config_path: Optional[str] = None, system_config_paths: Opt
             default_paths = [
                 Path("config/system_config.yml"),
                 Path("../config/system_config.yml"),
-                root_dir / "config" / "system_config.yml"
+                project_root / "config" / "system_config.yml"
             ]
             logger.info("config.paths.search", 
                 cwd=str(Path.cwd()),
-                root_dir=str(root_dir),
+                root_dir=str(project_root),
                 sys_paths=[str(p) for p in default_paths],
                 config_path=app_config_path
             )
