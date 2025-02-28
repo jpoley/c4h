@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Streamlined Prefect runner focusing exclusively on workflow execution and API service.
+Streamlined runner focused exclusively on team-based workflow execution and API service.
 Path: c4h_services/src/bootstrap/prefect_runner.py
 """
 
 from pathlib import Path
 import sys
 import os
+import uuid  # Add missing import
 
 # Add the project root to the Python path
 # We need to go up enough levels to include both c4h_services and c4h_agents
@@ -21,11 +22,12 @@ from enum import Enum
 import yaml
 from typing import Dict, Any, Optional, List
 import json
+from datetime import datetime, timezone
 
 # Now imports should work correctly
 from c4h_services.src.api.service import create_app
 from c4h_agents.config import deep_merge
-from c4h_services.src.intent.impl.prefect.workflows import run_basic_workflow
+from c4h_services.src.orchestration.orchestrator import Orchestrator
 
 logger = structlog.get_logger()
 
@@ -92,6 +94,12 @@ def load_configs(app_config_path: Optional[str] = None, system_config_paths: Opt
                          final_keys=list(final_config.keys()))
             final_config['llm_config'] = {}
             
+        # Ensure orchestration is enabled
+        if 'orchestration' not in final_config:
+            final_config['orchestration'] = {'enabled': True}
+        else:
+            final_config['orchestration']['enabled'] = True
+            
         return final_config
 
     except Exception as e:
@@ -101,7 +109,7 @@ def load_configs(app_config_path: Optional[str] = None, system_config_paths: Opt
         return {}
 
 def run_workflow(project_path: Optional[str], intent_desc: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
-    """Run a workflow with the provided configuration"""
+    """Run a team-based workflow with the provided configuration"""
     try:
         # Get project path from config if not provided as argument
         if not project_path:
@@ -120,12 +128,44 @@ def run_workflow(project_path: Optional[str], intent_desc: Dict[str, Any], confi
         if 'project' not in config:
             config['project'] = {}
         config['project']['path'] = project_path
+        
+        # Generate workflow ID
+        workflow_id = f"wf_{uuid.uuid4()}"
+        
+        # Add workflow ID to config for lineage tracking
+        if 'system' not in config:
+            config['system'] = {}
+        config['system']['runid'] = workflow_id
+        config['workflow_run_id'] = workflow_id
+        
+        # Add timestamp information
+        timestamp = datetime.now(timezone.utc).isoformat()
+        if 'runtime' not in config:
+            config['runtime'] = {}
+        if 'workflow' not in config['runtime']:
+            config['runtime']['workflow'] = {}
+        config['runtime']['workflow']['start_time'] = timestamp
                 
-        # Execute workflow using Prefect's run_basic_workflow
-        result = run_basic_workflow(
-            project_path=Path(project_path),
-            intent_desc=intent_desc,
-            config=config
+        # Create orchestrator and execute workflow
+        orchestrator = Orchestrator(config)
+        
+        # Prepare context
+        context = {
+            "project_path": project_path,
+            "intent": intent_desc,
+            "workflow_run_id": workflow_id,
+            "system": {"runid": workflow_id},
+            "timestamp": timestamp,
+            "config": config
+        }
+        
+        # Get entry team from config or use default
+        entry_team = config.get("orchestration", {}).get("entry_team", "discovery")
+        
+        # Execute workflow
+        result = orchestrator.execute_workflow(
+            entry_team=entry_team,
+            context=context
         )
         
         logger.info("workflow.completed",
@@ -141,11 +181,11 @@ def run_workflow(project_path: Optional[str], intent_desc: Dict[str, Any], confi
             "status": "error",
             "error": error_msg,
             "project_path": project_path,
-            "timestamp": None
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
 def main():
-    parser = argparse.ArgumentParser(description="Streamlined Prefect runner for workflows and API service")
+    parser = argparse.ArgumentParser(description="Streamlined team-based workflow runner and API service")
     parser.add_argument("mode", type=str, nargs="?", choices=["workflow", "service"], 
                        default="service", help="Run mode (workflow or service)")
     parser.add_argument("-P", "--port", type=int, default=8000, help="Port number for API service mode")
