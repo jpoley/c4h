@@ -6,14 +6,21 @@ Path: c4h_services/src/intent/impl/prefect/flows.py
 from prefect import flow, task, get_run_logger
 from prefect.states import Completed, Failed, Pending
 from prefect.context import get_flow_context, FlowRunContext
+from prefect.utilities.annotations import unmapped
 from typing import Dict, Any, Optional
-import structlog
+from c4h_services.src.utils.logging import get_logger
 from pathlib import Path
 import json
 
-from c4h_services.src.orchestration.orchestrator import Orchestrator
+from .tasks import (
+    run_agent_task,
+    create_discovery_task,
+    create_solution_task,
+    create_coder_task,
+    create_assurance_task
+)
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 @flow(name="intent_refactoring",
       description="Main workflow for intent-based refactoring",
@@ -52,45 +59,103 @@ def run_intent_workflow(
             }
         )
 
-        # Create orchestrator for team-based execution
-        orchestrator = Orchestrator(config)
-        
-        # Prepare context for team execution
-        context = {
-            "project_path": str(project_path),
-            "intent": intent_desc,
-            "workflow_run_id": str(flow_run.id),
-            "max_iterations": max_iterations,
-            "config": config
-        }
-        
-        # Execute workflow using team-based orchestration
-        result = orchestrator.execute_workflow(
-            entry_team="discovery",  # Start with discovery team
-            context=context,
-            max_teams=max_iterations * 3  # Allow multiple iterations
+        # Configure tasks
+        discovery_config = create_discovery_task(config)
+        solution_config = create_solution_task(config)
+        coder_config = create_coder_task(config)
+        assurance_config = create_assurance_task(config)
+
+        # Run discovery with state tracking
+        discovery_result = run_agent_task(
+            agent_config=discovery_config,
+            context={"project_path": str(project_path)},
+            task_name="discovery"
         )
         
-        if result.get("status") != "success":
+        if not discovery_result["success"]:
             return Failed(
-                message=f"Workflow failed: {result.get('error')}",
+                message=f"Discovery failed: {discovery_result['error']}",
                 result={
                     "status": "error",
-                    "error": result.get("error"),
+                    "error": discovery_result["error"],
+                    "stage": "discovery",
                     "flow_id": str(flow_run.id)
                 }
             )
-        
-        # Return completed state with team execution results
+
+        # Run solution design
+        solution_result = run_agent_task(
+            agent_config=solution_config,
+            context={
+                "input_data": {
+                    "discovery_data": discovery_result["result_data"],
+                    "intent": intent_desc
+                },
+                "iteration": 0  # Track in flow state
+            },
+            task_name="solution_design"
+        )
+
+        if not solution_result["success"]:
+            return Failed(
+                message=f"Solution design failed: {solution_result['error']}",
+                result={
+                    "status": "error",
+                    "error": solution_result["error"],
+                    "stage": "solution_design",
+                    "flow_id": str(flow_run.id),
+                    "discovery_data": discovery_result["stage_data"]
+                }
+            )
+
+        # Run coder
+        coder_result = run_agent_task(
+            agent_config=coder_config,
+            context={
+                "input_data": solution_result["result_data"]
+            },
+            task_name="coder"
+        )
+
+        if not coder_result["success"]:
+            return Failed(
+                message=f"Code changes failed: {coder_result['error']}",
+                result={
+                    "status": "error",
+                    "error": coder_result["error"],
+                    "stage": "coder",
+                    "flow_id": str(flow_run.id),
+                    "discovery_data": discovery_result["stage_data"],
+                    "solution_data": solution_result["stage_data"]
+                }
+            )
+
+        # Run assurance
+        assurance_result = run_agent_task(
+            agent_config=assurance_config,
+            context={
+                "changes": coder_result["result_data"].get("changes", []),
+                "intent": intent_desc
+            },
+            task_name="assurance"
+        )
+
+        # Return completed state with full result data
         return Completed(
             message="Workflow completed successfully",
             result={
                 "status": "success",
                 "flow_id": str(flow_run.id),
-                "data": result.get("data", {}),
-                "changes": result.get("data", {}).get("changes", []),
-                "execution_path": result.get("execution_path", []),
-                "team_results": result.get("team_results", {})
+                "stages": {
+                    "discovery": discovery_result["stage_data"],
+                    "solution_design": solution_result["stage_data"],
+                    "coder": coder_result["stage_data"],
+                    "assurance": assurance_result["stage_data"]
+                },
+                "result": {
+                    "changes": coder_result["result_data"].get("changes", []),
+                    "validation": assurance_result["result_data"]
+                }
             }
         )
 
@@ -128,52 +193,15 @@ def run_recovery_workflow(
         failed_result = flow_run.state.result()
         failed_stage = failed_result.get("stage")
         
-        # Create orchestrator for team-based recovery
-        orchestrator = Orchestrator(config)
-        
-        # Prepare recovery context
-        context = {
-            "workflow_run_id": flow_run_id,
-            "failed_stage": failed_stage,
-            "failed_result": failed_result,
-            "config": config,
-            "recovery": True
-        }
-        
-        # Determine appropriate entry team for recovery
-        entry_team = "recovery"  # Default recovery team
-        if failed_stage == "discovery":
-            entry_team = "discovery"
-        elif failed_stage == "solution_design":
-            entry_team = "solution"
-        elif failed_stage == "coder":
-            entry_team = "coder"
-        
-        # Execute recovery workflow
-        result = orchestrator.execute_workflow(
-            entry_team=entry_team,
-            context=context
-        )
-
-        if result.get("status") != "success":
+        if not failed_stage:
             return Failed(
-                message=f"Recovery failed: {result.get('error')}",
-                result={
-                    "status": "error",
-                    "error": result.get("error"),
-                    "flow_id": flow_run_id
-                }
+                message="Could not determine failure point",
+                result={"status": "error", "error": "Unknown failure point"}
             )
-        
-        return Completed(
-            message="Recovery completed successfully",
-            result={
-                "status": "success",
-                "flow_id": flow_run_id,
-                "data": result.get("data", {}),
-                "recovery_path": result.get("execution_path", [])
-            }
-        )
+
+        # Resume from failed stage
+        # TODO: Implement stage-specific recovery logic
+        return Pending(message="Recovery not yet implemented")
 
     except Exception as e:
         error_msg = str(e)

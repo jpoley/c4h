@@ -6,7 +6,7 @@ Path: c4h_services/src/api/service.py
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, Callable
-import structlog
+from c4h_services.src.utils.logging import get_logger
 from pathlib import Path
 import uuid
 import os
@@ -16,7 +16,7 @@ from c4h_agents.core.project import Project
 from c4h_services.src.api.models import WorkflowRequest, WorkflowResponse
 from c4h_services.src.orchestration.orchestrator import Orchestrator
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 # In-memory storage for workflow results (for demonstration purposes)
 # In production, this would be a database or persistent storage

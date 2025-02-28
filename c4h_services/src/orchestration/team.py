@@ -5,13 +5,13 @@ Path: c4h_services/src/orchestration/team.py
 
 from typing import Dict, Any, List, Optional
 from prefect import flow
-import structlog
+from c4h_services.src.utils.logging import get_logger
 from pathlib import Path
 
 from c4h_services.src.intent.impl.prefect.tasks import run_agent_task
 from c4h_services.src.intent.impl.prefect.models import AgentTaskConfig
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 class Team:
     """

@@ -4,7 +4,7 @@ Task wrapper implementation with enhanced configuration handling.
 """
 
 from typing import Dict, Any, Optional
-import structlog
+from c4h_services.src.utils.logging import get_logger
 from prefect import task, get_run_logger
 from prefect.runtime import flow_run
 import importlib
@@ -15,7 +15,7 @@ from c4h_agents.skills.shared.types import ExtractConfig
 from c4h_agents.config import create_config_node
 from .models import AgentTaskConfig
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 @task(retries=2, retry_delay_seconds=10)
 def run_agent_task(

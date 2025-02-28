@@ -4,11 +4,12 @@ Path: c4h_services/src/orchestration/orchestrator.py
 """
 
 from typing import Dict, Any, List, Optional, Set
-import structlog
+from c4h_services.src.utils.logging import get_logger
 from pathlib import Path
 from datetime import datetime, timezone
 from copy import deepcopy
-import yaml, uuid
+import yaml
+import uuid
 
 from c4h_agents.config import create_config_node, deep_merge
 from c4h_services.src.intent.impl.prefect.models import AgentTaskConfig
@@ -19,7 +20,7 @@ from c4h_services.src.intent.impl.prefect.factories import (
     create_coder_task
 )
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 class Orchestrator:
     """
@@ -36,7 +37,9 @@ class Orchestrator:
         """
         self.config = config
         self.config_node = create_config_node(config)
+        # Update logger with config
         self.teams = {}
+        logger = get_logger(config)
         self.loaded_teams = set()
         
         # Load team configurations
@@ -268,51 +271,3 @@ class Orchestrator:
                 execution_path=execution_path)
                 
         return final_result
-
-    def prepare_config(self, base_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Prepare workflow configuration with proper run ID and context.
-        Provides compatibility with legacy workflow configuration.
-        
-        Args:
-            base_config: Optional base configuration to use (uses self.config if None)
-            
-        Returns:
-            Prepared configuration dictionary
-        """
-        try:
-            # Use provided config or instance config
-            config_to_prepare = base_config if base_config is not None else self.config
-            
-            # Generate workflow ID if not present
-            workflow_id = self.config_node.get_value("workflow_run_id") or str(uuid.uuid4())
-            
-            # Deep copy to avoid mutations
-            config = deepcopy(config_to_prepare)
-            
-            # First, set the run ID at the root system namespace 
-            if 'system' not in config:
-                config['system'] = {}
-            config['system']['runid'] = workflow_id
-            
-            # For backward compatibility, also set in runtime config
-            if 'runtime' not in config:
-                config['runtime'] = {}
-                
-            config['runtime'].update({
-                'workflow_run_id': workflow_id,  # Primary workflow ID
-                'run_id': workflow_id,           # Legacy support
-                'workflow': {
-                    'id': workflow_id,
-                    'start_time': datetime.now(timezone.utc).isoformat()
-                }
-            })
-            
-            # Also set at top level for direct access
-            config['workflow_run_id'] = workflow_id
-            
-            return config
-            
-        except Exception as e:
-            logger.error("orchestrator.config_prep_failed", error=str(e))
-            raise
