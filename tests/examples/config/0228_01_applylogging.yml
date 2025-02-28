@@ -1,0 +1,136 @@
+# Path: c4h_services/examples/config/lineage_test_workflow.yml
+
+# Project settings
+project:
+  path: "./tests/test_projects/"  # Using test project
+  workspace_root: "workspaces"
+
+# Intent description
+intent:
+  description: |
+    Add logging to all functions with lineage tracking:
+    - Replace print statements with logging
+    - Add logging configuration
+    - Enable lineage tracking for observability
+
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-7-sonnet-20250219"
+  agents:
+    discovery:
+      temperature: 0
+      tartxt_config:
+        script_path: "./c4h_agents/skills/tartxt.py"  # Explicit path to tartxt.py
+        input_paths: ["./"]  # Scan everything in project path
+        exclusions: ["**/__pycache__/**"]  # Skip cache directories
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-7-sonnet-20250219"
+      temperature: 1
+      extended_thinking:
+        enabled: true
+        budget_tokens: 32000 # 32k tokens for extended thinking     
+    coder:
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-20241022"
+
+runtime:
+  # Workflow storage configuration
+  workflow:
+    storage:
+      enabled: true
+      root_dir: "workspaces/workflows"
+      format: "yymmdd_hhmm_{workflow_id}"
+      retention:
+        max_runs: 10
+        max_days: 30
+      error_handling:
+        ignore_storage_errors: true
+        log_level: "ERROR"
+        
+  # Lineage tracking configuration  
+  lineage:
+    enabled: true
+    namespace: "c4h_workflow"
+    separate_input_output: true
+    backend:
+      type: "file"  # File-based storage is more reliable for initial testing
+      path: "workspaces/lineage"  # Use explicit relative path
+    error_handling:
+      ignore_failures: true  # Don't let lineage errors affect workflow
+      log_level: "ERROR"
+    context:
+      include_metrics: true
+      include_token_usage: true
+      record_timestamps: true
+
+# Backup settings  
+backup:
+  enabled: true
+  path: "./workspaces/backups"  # Use explicit relative path
+
+# Logging settings
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "INFO"
+
+# Team orchestration configuration
+orchestration:
+  enabled: true
+  entry_team: "discovery"  # First team to execute
+  error_handling:
+    retry_teams: true
+    max_retries: 2
+    log_level: "ERROR"
+  teams:
+    # Discovery team - analyzes project structure
+    discovery:
+      name: "Discovery Team"
+      tasks:
+        - name: "discovery"
+          agent_class: "c4h_agents.agents.discovery.DiscoveryAgent"
+          requires_approval: false
+          max_retries: 2
+      routing:
+        default: "solution"  # Go to solution team next
+
+    # Solution team - designs code changes
+    solution:
+      name: "Solution Design Team"
+      tasks:
+        - name: "solution_designer" 
+          agent_class: "c4h_agents.agents.solution_designer.SolutionDesigner"
+          requires_approval: true
+          max_retries: 1
+      routing:
+        rules:
+          - condition: "all_success"
+            next_team: "coder"
+          - condition: "any_failure"
+            next_team: "fallback"
+        default: "coder"  # Default next team
+
+    # Coder team - implements code changes  
+    coder:
+      name: "Coder Team"
+      tasks:
+        - name: "coder"
+          agent_class: "c4h_agents.agents.coder.Coder"
+          requires_approval: true
+      routing:
+        rules:
+          - condition: "all_success"
+            next_team: null  # End workflow on success
+        default: null  # End workflow by default
+
+    # Fallback team - handles failures with simplified approach
+    fallback:
+      name: "Fallback Team"
+      tasks:
+        - name: "fallback_coder"
+          agent_class: "c4h_agents.agents.coder.Coder"
+          config:
+            temperature: 0  # Lower temperature for more conservative changes
+      routing:
+        default: null  # End workflow after fallback

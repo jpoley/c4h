@@ -1,5 +1,5 @@
 """
-API service implementation supporting config-less startup and full API configuration.
+API service implementation focused exclusively on team-based orchestration.
 Path: c4h_services/src/api/service.py
 """
 
@@ -14,7 +14,7 @@ import os
 from c4h_agents.config import deep_merge
 from c4h_agents.core.project import Project
 from c4h_services.src.api.models import WorkflowRequest, WorkflowResponse
-from c4h_services.src.intent.impl.prefect.workflows import run_basic_workflow
+from c4h_services.src.orchestration.orchestrator import Orchestrator
 
 logger = structlog.get_logger()
 
@@ -24,7 +24,7 @@ workflow_storage: Dict[str, Dict[str, Any]] = {}
 
 def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
     """
-    Create FastAPI application with optional default configuration.
+    Create FastAPI application with team-based orchestration.
     
     Args:
         default_config: Optional base configuration for the service
@@ -34,18 +34,23 @@ def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
     """
     app = FastAPI(
         title="C4H Workflow Service",
-        description="API for executing C4H workflows",
-        version="0.1.0"
+        description="API for executing C4H team-based workflows",
+        version="0.2.0"
     )
     
     # Store default config in app state
     app.state.default_config = default_config or {}
     
+    # Create orchestrator
+    app.state.orchestrator = Orchestrator(app.state.default_config)
+    logger.info("api.team_orchestration_initialized", 
+               teams=len(app.state.orchestrator.teams))
+    
     # Register routes
     @app.post("/api/v1/workflow", response_model=WorkflowResponse)
     async def run_workflow(request: WorkflowRequest):
         """
-        Execute a workflow with the provided configuration.
+        Execute a team-based workflow with the provided configuration.
         Configuration from the request is merged with the default configuration.
         """
         try:
@@ -71,40 +76,56 @@ def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
             # Store intent in config
             config['intent'] = request.intent
             
+            # Ensure orchestration is enabled in config
+            if 'orchestration' not in config:
+                config['orchestration'] = {'enabled': True}
+            else:
+                config['orchestration']['enabled'] = True
+                
             # Log workflow start
             logger.info("workflow.starting", 
                         workflow_id=workflow_id, 
                         project_path=request.project_path,
                         config_keys=list(config.keys()))
             
-            # Execute workflow (we'll use Prefect's run_basic_workflow)
-            # In a production environment, this would be an async task
+            # Prepare context
+            context = {
+                "project_path": request.project_path,
+                "intent": request.intent,
+                "workflow_run_id": workflow_id,
+                "config": config
+            }
+            
+            # Execute workflow
             try:
-                result = run_basic_workflow(
-                    project_path=Path(request.project_path),
-                    intent_desc=request.intent,
-                    config=config
+                # Get entry team from config or use default
+                entry_team = config.get("orchestration", {}).get("entry_team", "discovery")
+                
+                result = app.state.orchestrator.execute_workflow(
+                    entry_team=entry_team,
+                    context=context
                 )
                 
                 # Store result
                 workflow_storage[workflow_id] = {
-                    "status": "success",
-                    "stages": result.get("stages", {}),
-                    "changes": result.get("changes", []),
+                    "status": result.get("status", "error"),
+                    "team_results": result.get("team_results", {}),
+                    "changes": result.get("data", {}).get("changes", []),
                     "storage_path": os.path.join("workspaces", "lineage", workflow_id) if config.get("lineage", {}).get("enabled", False) else None
                 }
                 
                 return WorkflowResponse(
                     workflow_id=workflow_id,
-                    status="success",
-                    storage_path=workflow_storage[workflow_id].get("storage_path")
+                    status=result.get("status", "error"),
+                    storage_path=workflow_storage[workflow_id].get("storage_path"),
+                    error=result.get("error") if result.get("status") == "error" else None
                 )
                 
             except Exception as e:
                 logger.error("workflow.execution_failed", 
                            workflow_id=workflow_id, 
                            error=str(e))
-                           
+                
                 workflow_storage[workflow_id] = {
                     "status": "error",
                     "error": str(e),
@@ -138,7 +159,11 @@ def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
     @app.get("/health")
     async def health_check():
         """Simple health check endpoint"""
-        return {"status": "healthy", "workflows_tracked": len(workflow_storage)}
+        return {
+            "status": "healthy", 
+            "workflows_tracked": len(workflow_storage),
+            "teams_available": len(app.state.orchestrator.teams)
+        }
             
     return app
 

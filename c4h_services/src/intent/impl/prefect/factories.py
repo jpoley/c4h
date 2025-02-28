@@ -3,7 +3,7 @@ Path: c4h_services/src/intent/impl/prefect/factories.py
 Task factory functions with enhanced configuration handling.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, List
 from pathlib import Path
 import structlog
 
@@ -122,3 +122,41 @@ def create_coder_task(config: Dict[str, Any]) -> AgentTaskConfig:
         max_retries=1,
         retry_delay_seconds=60
     )
+
+def create_team_tasks(config: Dict[str, Any], team_config: Dict[str, Any]) -> List[AgentTaskConfig]:
+    """
+    Create task configurations for a team from configuration.
+    
+    Args:
+        config: Complete configuration dictionary
+        team_config: Team-specific configuration
+        
+    Returns:
+        List of AgentTaskConfig objects
+    """
+    tasks = []
+    for task_def in team_config.get("tasks", []):
+        try:
+            agent_class = task_def.get("agent_class")
+            if not agent_class:
+                logger.error("factories.missing_agent_class", task=task_def)
+                continue
+                
+            # Create task config
+            agent_config = AgentTaskConfig(
+                agent_class=agent_class,
+                config=config.copy(),
+                task_name=task_def.get("name"),
+                requires_approval=task_def.get("requires_approval", False),
+                max_retries=task_def.get("max_retries", 3),
+                retry_delay_seconds=task_def.get("retry_delay_seconds", 30)
+            )
+            
+            tasks.append(agent_config)
+            
+        except Exception as e:
+            logger.error("factories.task_creation_failed", 
+                       task=task_def.get("name", "unknown"),
+                       error=str(e))
+    
+    return tasks

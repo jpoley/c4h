@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional
 import structlog
 from prefect import task, get_run_logger
 from prefect.runtime import flow_run
-from pathlib import Path
+import importlib
 
 from c4h_agents.agents.base_agent import BaseAgent
 from c4h_agents.skills.semantic_iterator import SemanticIterator
@@ -66,6 +66,22 @@ def run_agent_task(
         agent_config.config["system"]["runid"] = run_id
         agent_config.config["workflow_run_id"] = run_id
         
+        # Support both class instance and dynamic class loading
+        agent_class = agent_config.agent_class
+        
+        # If a string is provided, dynamically load the class
+        if isinstance(agent_class, str):
+            try:
+                module_path, class_name = agent_class.rsplit(".", 1)
+                module = importlib.import_module(module_path)
+                agent_class = getattr(module, class_name)
+            except (ValueError, ImportError, AttributeError) as e:
+                logger.error("task.agent_class_loading_failed", 
+                           task=task_name,
+                           agent_class=agent_class,
+                           error=str(e))
+                raise ValueError(f"Failed to load agent class {agent_class}: {str(e)}")
+        
         # Log the configuration for debugging
         logger.debug("task.agent_config_prepared", 
                     task=task_name,
@@ -86,7 +102,7 @@ def run_agent_task(
         
         # Create the agent with configuration only
         # Each agent will create its own Project instance if needed
-        agent = agent_config.agent_class(config=agent_config.config)
+        agent = agent_class(config=agent_config.config)
 
         # Special handling for iterator
         if isinstance(agent, SemanticIterator):
