@@ -342,13 +342,37 @@ class BaseAgent(BaseConfig, BaseLLM):
         return str(context)
     
     def _get_llm_content(self, response: Any) -> Any:
+        """Extract content from LLM response with robust error handling for different response formats"""
         try:
+            # Handle different response types
             if hasattr(response, 'choices') and response.choices:
-                content = response.choices[0].message.content
-                if self._should_log(LogDetail.DEBUG):
-                    logger.debug("content.extracted_from_model", content_length=len(content) if content else 0)
-                return content
-            return str(response)
+                # Standard response object
+                if hasattr(response.choices[0], 'message') and hasattr(response.choices[0].message, 'content'):
+                    content = response.choices[0].message.content
+                    if self._should_log(LogDetail.DEBUG):
+                        logger.debug("content.extracted_from_model", content_length=len(content) if content else 0)
+                    return content
+                # Handle delta format (used in streaming)
+                elif hasattr(response.choices[0], 'delta') and hasattr(response.choices[0].delta, 'content'):
+                    content = response.choices[0].delta.content
+                    if self._should_log(LogDetail.DEBUG):
+                        logger.debug("content.extracted_from_delta", content_length=len(content) if content else 0)
+                    return content
+            
+            # If we have a simple string content
+            if isinstance(response, str):
+                return response
+                
+            # If response is already processed (dict with 'response' key)
+            if isinstance(response, dict) and 'response' in response:
+                return response['response']
+                
+            # Last resort fallback - convert to string
+            result = str(response)
+            logger.warning("content.extraction_fallback", 
+                        response_type=type(response).__name__, 
+                        content_preview=result[:100] if len(result) > 100 else result)
+            return result
         except Exception as e:
             logger.error("content_extraction.failed", error=str(e))
             return str(response)

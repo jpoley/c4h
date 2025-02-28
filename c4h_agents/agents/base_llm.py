@@ -142,21 +142,6 @@ class BaseLLM:
                             # Get streamed response
                             response_stream = completion(**completion_params)
                             
-                            # Create a structured response object to return
-                            combined_response = {
-                                "choices": [
-                                    {
-                                        "message": {"content": ""},
-                                        "finish_reason": "stop"
-                                    }
-                                ],
-                                "usage": {
-                                    "prompt_tokens": 0,
-                                    "completion_tokens": 0,
-                                    "total_tokens": 0
-                                }
-                            }
-                            
                             # Process the stream
                             for chunk in response_stream:
                                 try:
@@ -165,28 +150,30 @@ class BaseLLM:
                                         delta = chunk.choices[0].delta
                                         if hasattr(delta, 'content') and delta.content:
                                             full_content += delta.content
-                                        
-                                        # Check for finish_reason
-                                        if chunk.choices[0].finish_reason:
-                                            combined_response["choices"][0]["finish_reason"] = chunk.choices[0].finish_reason
-                                    
-                                    # Update usage if available
-                                    if hasattr(chunk, 'usage') and chunk.usage:
-                                        combined_response["usage"] = chunk.usage
                                 except Exception as e:
                                     logger.error("llm.stream_chunk_processing_error", 
                                             error=str(e),
                                             chunk_type=type(chunk).__name__)
                             
-                            # Update the final response content
-                            combined_response["choices"][0]["message"]["content"] = full_content
-                            
-                            # Set as the response for further processing
-                            response = type('obj', (object,), combined_response)
+                            # Create a proper response object with the necessary structure
+                            class StreamedResponse:
+                                def __init__(self, content):
+                                    self.choices = [type('Choice', (), {
+                                        'message': type('Message', (), {'content': content}),
+                                        'finish_reason': 'stop'
+                                    })]
+                                    self.usage = type('Usage', (), {
+                                        'prompt_tokens': 0,
+                                        'completion_tokens': 0,
+                                        'total_tokens': 0
+                                    })
+                                    
+                            # Create a response object that mimics the structure of a regular response
+                            response = StreamedResponse(full_content)
                             
                             logger.info("llm.stream_processing_complete", 
                                     content_length=len(full_content),
-                                    finish_reason=combined_response["choices"][0]["finish_reason"])
+                                    finish_reason='stop')
                         else:
                             # Standard non-streaming request
                             response = completion(**completion_params)
@@ -281,7 +268,6 @@ class BaseLLM:
             except Exception as e:
                 logger.error("llm.continuation_failed", error=str(e))
                 raise
-
 
     def _process_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
         """
