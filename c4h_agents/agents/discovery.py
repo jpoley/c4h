@@ -13,6 +13,8 @@ from c4h_agents.agents.base_agent import BaseAgent, AgentResponse
 from config import locate_config
 from c4h_agents.utils.logging import get_logger
 
+logger = get_logger()
+
 @dataclass
 class DiscoveryResult:
     """Result of project discovery operation"""

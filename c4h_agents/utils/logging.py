@@ -43,7 +43,7 @@ def truncate_log_string(
         suffix_len = suffix_len or 20
     
     # Calculate total length
-    total_len = prefix_len + suffix_len + 7  # 7 is length of " ..... "
+    total_len = prefix_len + suffix_len + 20 # 20 for the truncation indicator
     
     # If string is shorter than threshold, return as is
     if len(value) <= total_len:

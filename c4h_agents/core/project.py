@@ -11,7 +11,9 @@ from typing import Optional, Dict, Any, List
 import structlog
 from datetime import datetime
 
-logger = structlog.get_logger()
+from c4h_agents.utils.logging import get_logger
+
+logger = get_logger()
 
 @dataclass
 class ProjectPaths:

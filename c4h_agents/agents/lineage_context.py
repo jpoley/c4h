@@ -9,7 +9,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import json
 from c4h_agents.utils.logging import get_logger
-
+logger = get_logger()
 class LineageContext:
     """
     Utility class for managing execution context with lineage tracking.

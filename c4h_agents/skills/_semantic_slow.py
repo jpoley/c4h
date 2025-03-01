@@ -10,6 +10,7 @@ import json
 from config import locate_config
 from c4h_agents.utils.logging import get_logger
 
+logger = get_logger()
 class ExtractionError(Exception):
     """Custom exception for extraction errors"""
     pass

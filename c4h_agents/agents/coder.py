@@ -13,6 +13,8 @@ from c4h_agents.skills.semantic_iterator import SemanticIterator
 from c4h_agents.skills.asset_manager import AssetManager
 from c4h_agents.utils.logging import get_logger
 
+logger = get_logger()
+
 @dataclass 
 class CoderMetrics:
     """Detailed metrics for code processing operations"""
