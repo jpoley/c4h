@@ -17,7 +17,7 @@ def truncate_log_string(
     Truncate a string value for logging purposes.
     
     Args:
-        value: The value to truncate (if it's a string)
+        value: The value to truncate (if it's a string or can be converted to string)
         config: Configuration dictionary to get default lengths
         prefix_len: Length of prefix to show (overrides config)
         suffix_len: Length of suffix to show (overrides config)
@@ -26,10 +26,6 @@ def truncate_log_string(
         Truncated string if input is a string and longer than threshold, 
         otherwise original value
     """
-    # Only process string values
-    if not isinstance(value, str):
-        return value
-        
     # Get config values if not provided
     if config:
         config_node = create_config_node(config)
@@ -42,15 +38,30 @@ def truncate_log_string(
         prefix_len = prefix_len or 10
         suffix_len = suffix_len or 20
     
+    # For complex objects, convert to string first
+    if not isinstance(value, str):
+        # Handle complex objects that can't be converted to strings safely
+        try:
+            obj_str = str(value)
+        except Exception:
+            return value
+    else:
+        obj_str = value
+    
     # Calculate total length
-    total_len = prefix_len + suffix_len + 20 # 20 for the truncation indicator
+    total_len = prefix_len + suffix_len + 7  # 7 is length of " ..... "
     
     # If string is shorter than threshold, return as is
-    if len(value) <= total_len:
-        return value
-        
-    # Truncate the string
-    return f"{value[:prefix_len]} ..... {value[-suffix_len:]}"
+    if len(obj_str) <= total_len:
+        return value  # Return the original value, not the string conversion
+    
+    # For complex objects, just indicate it's a complex object
+    if not isinstance(value, str):
+        type_name = type(value).__name__
+        return f"<complex value, length={len(obj_str)}, type={type_name}>"
+    
+    # For actual strings, truncate normally
+    return f"{obj_str[:prefix_len]} ..... {obj_str[-suffix_len:]}"
 
 def get_logger(config: Optional[Dict[str, Any]] = None) -> structlog.BoundLogger:
     """

@@ -26,9 +26,9 @@ llm_config:
     solution_designer:
       provider: "anthropic"
       model: "claude-3-7-sonnet-20250219"
-      temperature: 1
+      temperature: 0
       extended_thinking:
-        enabled: true
+        enabled: false
         budget_tokens: 32000 # 32k tokens for extended thinking     
     coder:
       provider: "anthropic"

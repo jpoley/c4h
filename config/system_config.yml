@@ -519,9 +519,9 @@ backup:
   path: "workspaces/backups"  # Default backup path
 
 logging:
-  level: "debug"  
+  level: "INFO"
   format: "structured"
-  agent_level: "debug"  
+  agent_level: "INFO"
   providers:
     anthropic:
       level: "debug"
