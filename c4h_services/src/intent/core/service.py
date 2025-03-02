@@ -5,9 +5,9 @@ Path: c4h_services/src/intent/core/service.py
 
 from typing import Dict, Any, Protocol, runtime_checkable
 from pathlib import Path
-import structlog
+from c4h_services.src.utils.logging import get_logger
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 @runtime_checkable
 class IntentService(Protocol):

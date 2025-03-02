@@ -4,8 +4,7 @@ Task factory functions with enhanced configuration handling.
 """
 
 from typing import Dict, Any, List
-from pathlib import Path
-import structlog
+from c4h_services.src.utils.logging import get_logger
 
 from .models import AgentTaskConfig
 from c4h_agents.agents.discovery import DiscoveryAgent
@@ -13,7 +12,7 @@ from c4h_agents.agents.solution_designer import SolutionDesigner
 from c4h_agents.agents.coder import Coder
 from c4h_agents.config import create_config_node
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 def prepare_agent_config(config: Dict[str, Any], agent_section: str) -> Dict[str, Any]:
     """

@@ -4,11 +4,12 @@ Path: c4h_services/src/orchestration/orchestrator.py
 """
 
 from typing import Dict, Any, List, Optional, Set
-import structlog
+from c4h_services.src.utils.logging import get_logger
 from pathlib import Path
+from datetime import datetime, timezone
+from copy import deepcopy
 import yaml
 import uuid
-from datetime import datetime, timezone
 
 from c4h_agents.config import create_config_node, deep_merge
 from c4h_services.src.intent.impl.prefect.models import AgentTaskConfig
@@ -19,7 +20,7 @@ from c4h_services.src.intent.impl.prefect.factories import (
     create_coder_task
 )
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 class Orchestrator:
     """
@@ -36,7 +37,9 @@ class Orchestrator:
         """
         self.config = config
         self.config_node = create_config_node(config)
+        # Update logger with config
         self.teams = {}
+        logger = get_logger(config)
         self.loaded_teams = set()
         
         # Load team configurations
@@ -268,4 +271,3 @@ class Orchestrator:
                 execution_path=execution_path)
                 
         return final_result
-

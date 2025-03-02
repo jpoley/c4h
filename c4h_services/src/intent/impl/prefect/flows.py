@@ -8,7 +8,7 @@ from prefect.states import Completed, Failed, Pending
 from prefect.context import get_flow_context, FlowRunContext
 from prefect.utilities.annotations import unmapped
 from typing import Dict, Any, Optional
-import structlog
+from c4h_services.src.utils.logging import get_logger
 from pathlib import Path
 import json
 
@@ -20,7 +20,7 @@ from .tasks import (
     create_assurance_task
 )
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 @flow(name="intent_refactoring",
       description="Main workflow for intent-based refactoring",

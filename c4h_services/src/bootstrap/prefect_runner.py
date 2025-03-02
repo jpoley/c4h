@@ -16,7 +16,7 @@ project_root = script_path.parent.parent.parent.parent  # Go up to the project r
 sys.path.append(str(project_root))
 
 import uvicorn
-import structlog
+from c4h_services.src.utils.logging import get_logger
 import argparse
 from enum import Enum
 import yaml
@@ -29,7 +29,7 @@ from c4h_services.src.api.service import create_app
 from c4h_agents.config import deep_merge
 from c4h_services.src.orchestration.orchestrator import Orchestrator
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 class LogMode(str, Enum):
     """Logging modes supported by runner"""
@@ -45,6 +45,8 @@ def load_configs(app_config_path: Optional[str] = None, system_config_paths: Opt
                 app_config = yaml.safe_load(f) or {}
                 
             logger.info("config.content.loaded",
+                      # Update logger with config after loading
+                      logger = get_logger(app_config),
                       app_config_keys=list(app_config.keys()),
                       project_path=app_config.get('project', {}).get('path'),
                       has_intent=('intent' in app_config))

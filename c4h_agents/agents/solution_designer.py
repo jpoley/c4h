@@ -4,13 +4,13 @@ Path: src/agents/solution_designer.py
 """
 
 from typing import Dict, Any, Optional
-import structlog
 from datetime import datetime
 import json
 from c4h_agents.agents.base_agent import BaseAgent, LogDetail, AgentResponse 
 from config import locate_config
+from c4h_agents.utils.logging import get_logger
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 class SolutionDesigner(BaseAgent):
     """Designs specific code modifications based on intent and discovery analysis."""
@@ -166,11 +166,6 @@ class SolutionDesigner(BaseAgent):
                 "raw_content": content,
                 "timestamp": datetime.utcnow().isoformat()
             }
-
-    """
-    Solution designer implementation focused on synchronous operation.
-    Path: c4h_agents/agents/solution_designer.py
-    """
 
     def _get_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Extract data from context with discovery results"""

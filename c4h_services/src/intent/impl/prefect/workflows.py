@@ -6,7 +6,7 @@ Core workflow implementation with enhanced lineage tracking.
 from prefect import flow, get_run_logger
 from prefect.context import get_run_context
 from typing import Dict, Any, Optional, List
-import structlog
+from c4h_services.src.utils.logging import get_logger
 from pathlib import Path
 from datetime import datetime, timezone
 from copy import deepcopy
@@ -23,7 +23,7 @@ from .factories import (
 # Import the LineageContext utility
 from c4h_agents.agents.lineage_context import LineageContext
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 def prepare_workflow_config(base_config: Dict[str, Any]) -> Dict[str, Any]:
     """

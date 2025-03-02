@@ -527,3 +527,6 @@ logging:
       level: "debug"
     openai:
       level: "debug"
+  truncate:
+    prefix_length: 10
+    suffix_length: 20

@@ -5,7 +5,7 @@ Path: c4h_services/src/intent/impl/prefect/service.py
 
 from typing import Dict, Any, Optional
 from pathlib import Path
-import structlog
+from c4h_services.src.utils.logging import get_logger
 from datetime import datetime
 import uuid
 from prefect.client import get_client
@@ -14,7 +14,7 @@ from prefect.deployments import Deployment
 from c4h_agents.config import load_config, load_with_app_config
 from .flows import run_intent_workflow, run_recovery_workflow, run_rollback_workflow
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 class PrefectIntentService:
     """

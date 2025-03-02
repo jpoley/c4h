@@ -1,5 +1,3 @@
-# Path: c4h_agents/agents/base_config.py
-
 """
 Configuration management for agent implementations following design principles.
 Path: c4h_agents/agents/base_config.py
@@ -14,9 +12,10 @@ import time
 
 from c4h_agents.core.project import Project, ProjectPaths
 from c4h_agents.config import ConfigNode, create_config_node, locate_config, get_value
+from c4h_agents.utils.logging import get_logger
 from .types import LogDetail, LLMProvider
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 def log_operation(operation_name: str):
     """Operation logging decorator"""

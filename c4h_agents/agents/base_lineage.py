@@ -9,7 +9,6 @@ from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 import json
 import uuid
-import structlog
 import os
 
 # Try importing OpenLineage, but don't fail if it's not available
@@ -23,8 +22,9 @@ except ImportError:
 
 from c4h_agents.agents.types import LLMMessages
 from c4h_agents.config import create_config_node
+from c4h_agents.utils.logging import get_logger
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 @dataclass
 class LineageEvent:
@@ -192,9 +192,6 @@ class BaseLineage:
         
         return event_id, parent_id, step, path
 
-    # In file: c4h_agents/agents/base_lineage.py
-    # Replace or modify the _write_file_event method
-
     def _write_file_event(self, event: LineageEvent) -> None:
         """Write event to file system with basic serialization"""
         if not self.enabled or not self.lineage_dir:
@@ -274,9 +271,6 @@ class BaseLineage:
                         lineage_dir=str(self.lineage_dir), 
                         agent=event.agent_name,
                         event_id=event.event_id)
-
-    # In file: c4h_agents/agents/base_lineage.py
-    # Replace or modify the track_llm_interaction method
 
     def track_llm_interaction(self,
                             context: Dict[str, Any],
@@ -368,5 +362,4 @@ class BaseLineage:
             )
             self.client.emit(ol_event)
             logger.info("lineage.marquez_event_emitted", event_id=event.event_id)
-        except Exception as e:
-            logger.error("lineage.marquez_event_failed", error=str(e), event_id=event.event_id)
+        except Exception as e:logger.error("lineage.marquez_event_failed", error=str(e), event_id=event.event_id)
