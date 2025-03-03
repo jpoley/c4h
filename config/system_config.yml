@@ -130,6 +130,9 @@ llm_config:
             ]
           }
 
+          PATH REQUIREMENTS:
+          Make sure to use the full path for a file as it appears in the manifest.
+
           FORMAT REQUIREMENTS FOR EACH TYPE:
 
           1. NEW FILES (type: "create"):
@@ -512,6 +515,16 @@ runtime:
       include_metrics: true
       include_token_usage: true
       record_timestamps: true
+    retry:
+      enabled: true
+      max_attempts: 3
+      initial_delay: 1
+      max_delay: 30
+      backoff_factor: 2
+      retry_on:
+        - "overloaded_error"
+        - "rate_limit_error"
+        - "timeout_error"
 
 # Backup settings
 backup:

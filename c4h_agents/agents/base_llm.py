@@ -16,6 +16,7 @@ logger = get_logger()
 class BaseLLM:
     """LLM interaction layer"""
 
+
     def _get_completion_with_continuation(
             self, 
             messages: List[Dict[str, str]],
@@ -23,8 +24,14 @@ class BaseLLM:
         ) -> Tuple[str, Any]:
             """
             Get completion with automatic continuation handling.
-            Handles overload conditions with exponential backoff.
-            Supports extended thinking for Claude 3.7 Sonnet.
+            Uses overlap mechanism to ensure proper joining of continued responses.
+            
+            Args:
+                messages: List of message dictionaries with role and content
+                max_attempts: Maximum number of continuation attempts
+                
+            Returns:
+                Tuple of (accumulated_content, final_response)
             """
             try:
                 attempt = 0
@@ -120,14 +127,10 @@ class BaseLLM:
                             model=self.model,
                             max_tokens=completion_params.get("max_tokens"))
 
-                # Check if we're dealing with JSON
-                is_json_context = any(
-                    "json" in msg.get("content", "").lower() or
-                    msg.get("content", "").strip().startswith("{") or 
-                    msg.get("content", "").strip().startswith("[") 
-                    for msg in messages if msg.get("role") == "user"
-                )
+                # Define a single, generic overlap marker
+                overlap_marker = "###CONTENT_OVERLAP###"
 
+                # Start completion loop with continuation handling
                 while attempt < max_tries:
                     if attempt > 0:
                         logger.info("llm.continuation_attempt",
@@ -191,38 +194,45 @@ class BaseLLM:
                         result = self._process_response(response, response)
                         final_response = response
                         
-                        # For JSON responses, handle joining carefully
+                        # Extract current content from the response
                         current_content = result['response']
-                        if is_json_context and attempt > 0:
-                            # If this appears to be JSON, ensure clean joining
-                            if accumulated_content.rstrip().endswith(",") and current_content.lstrip().startswith(","):
-                                # Remove duplicate comma
-                                accumulated_content = accumulated_content.rstrip()
-                                current_content = current_content.lstrip()[1:].lstrip()
                         
-                        accumulated_content += current_content
+                        # Handle continuation based on attempt number
+                        if attempt > 0:
+                            # Use overlap marker to join content accurately
+                            accumulated_content = self._join_with_overlap(
+                                accumulated_content, 
+                                current_content, 
+                                overlap_marker
+                            )
+                        else:
+                            # First response, just use it directly
+                            accumulated_content = current_content
                         
+                        # Check if we need to continue
                         finish_reason = getattr(response.choices[0], 'finish_reason', None)
-                            
+                        
                         if finish_reason == 'length':
                             logger.info("llm.length_limit_reached", attempt=attempt)
-                            messages.append({"role": "assistant", "content": result['response']})
                             
-                            # Choose appropriate continuation prompt
-                            if is_json_context:
-                                continuation_prompt = (
-                                    "Continue the JSON response exactly from where you left off. "
-                                    "Make sure your response starts with a valid JSON fragment that "
-                                    "will connect seamlessly with what you've already provided. "
-                                    "Do not repeat any content."
-                                )
-                            else:
-                                continuation_prompt = (
-                                    "Continue exactly from where you left off, maintaining exact format and indentation. "
-                                    "Do not repeat any content."
-                                )
+                            # Get the last part of content for overlap (up to 200 chars)
+                            overlap_length = 200
+                            last_chunk = accumulated_content[-overlap_length:] if len(accumulated_content) > overlap_length else accumulated_content
                             
+                            # Create a continuation prompt with the overlap
+                            continuation_prompt = (
+                                f"Continue exactly from where you left off. Here's the last part I received:\n\n"
+                                f"{overlap_marker}\n{last_chunk}\n{overlap_marker}\n\n"
+                                f"Continue from this point, making sure your response starts with the overlap marker, "
+                                f"followed by the overlapping text, and then continue with new content. "
+                                f"The overlap section helps me join the pieces correctly."
+                            )
+                            
+                            # Add assistant and user messages for continuation
+                            messages.append({"role": "assistant", "content": current_content})
                             messages.append({"role": "user", "content": continuation_prompt})
+                            
+                            # Update parameters for next request
                             completion_params["messages"] = messages
                             attempt += 1
                             continue
@@ -259,15 +269,147 @@ class BaseLLM:
                                 attempt=attempt)
                         raise
 
+                # Update the content in the final response
                 if final_response and hasattr(final_response, 'choices') and final_response.choices:
                     final_response.choices[0].message.content = accumulated_content
 
+                # Remove any remaining overlap markers from final content
+                if overlap_marker in accumulated_content:
+                    accumulated_content = self._clean_overlap_markers(accumulated_content, overlap_marker)
+                
                 self.metrics["continuation_attempts"] = attempt + 1
                 return accumulated_content, final_response
 
             except Exception as e:
                 logger.error("llm.continuation_failed", error=str(e))
                 raise
+    
+    def _join_with_overlap(self, previous: str, current: str, marker: str) -> str:
+        """
+        Join content using the overlap marker as an alignment guide.
+        Works with any content type by finding exact overlapping text.
+        
+        Args:
+            previous: First chunk of content
+            current: Continuation chunk 
+            marker: Overlap marker string
+            
+        Returns:
+            Joined content with proper alignment
+        """
+        # Check if marker exists in the continuation
+        if marker not in current:
+            # No marker found, directly append with basic cleaning
+            return self._basic_join(previous, current)
+        
+        # Extract content sections using the marker
+        marker_parts = current.split(marker, 2)
+        
+        # We expect the format: [before_marker, overlap_text, continuation_text]
+        if len(marker_parts) < 3:
+            # Not enough marker parts, use everything after the first marker
+            content_after_marker = marker_parts[-1] if len(marker_parts) > 1 else current
+            return previous + content_after_marker
+        
+        # Extract the overlap text between the markers
+        overlap_text = marker_parts[1].strip()
+        continuation_text = marker_parts[2].strip()
+        
+        # Find the exact overlap in the previous content
+        if overlap_text and overlap_text in previous:
+            # Find the last occurrence of the overlap
+            overlap_pos = previous.rfind(overlap_text)
+            if overlap_pos >= 0:
+                # Join at the exact overlap point
+                return previous[:overlap_pos] + overlap_text + continuation_text
+        
+        # If no exact match, try line-by-line matching for better alignment
+        return self._fuzzy_line_join(previous, overlap_text, continuation_text)
+
+    def _basic_join(self, previous: str, current: str) -> str:
+        """
+        Join content with basic cleaning and special case handling.
+        Generic approach that works reasonably well for different content types.
+        """
+        # Clean up the join point
+        previous = previous.rstrip()
+        current = current.lstrip()
+        
+        # Handle JSON continuation special cases
+        if (previous.endswith(",") and current.startswith(",")) or \
+        (previous.endswith("{") and current.startswith("{")):
+            current = current[1:].lstrip()
+        elif previous.endswith("}") and current.startswith("}"):
+            # Multiple closing braces - might need to insert comma
+            return previous + "," + current
+            
+        # Check if we need newline between code segments
+        if previous.endswith((";", "{", "}", ":", ">")):
+            return previous + "\n" + current
+        
+        # For most cases, just join with a space
+        if not previous.endswith((" ", "\n", "\t")) and not current.startswith((" ", "\n", "\t")):
+            return previous + " " + current
+            
+        return previous + current
+
+    def _fuzzy_line_join(self, previous: str, overlap: str, continuation: str) -> str:
+        """
+        Join content using line-by-line fuzzy matching when exact overlap fails.
+        Works for both code and text content.
+        """
+        # If no overlap provided, fall back to simple joining
+        if not overlap:
+            return previous + continuation
+        
+        # Split into lines for analysis
+        prev_lines = previous.split("\n")
+        overlap_lines = overlap.split("\n")
+        
+        # Try to find a multi-line match first (most reliable)
+        if len(overlap_lines) >= 2:
+            # Use the first 2 lines of overlap as a search pattern
+            pattern = "\n".join(overlap_lines[:2])
+            pattern_pos = previous.rfind(pattern)
+            
+            if pattern_pos >= 0:
+                # Found a match, join at this point
+                return previous[:pattern_pos] + overlap + continuation
+        
+        # Try matching single lines if multi-line matching fails
+        if prev_lines and overlap_lines:
+            # Look at last 3 lines of previous content
+            for i in range(min(3, len(prev_lines))):
+                last_line_idx = len(prev_lines) - 1 - i
+                if last_line_idx < 0:
+                    break
+                    
+                last_line = prev_lines[last_line_idx].strip()
+                first_overlap_line = overlap_lines[0].strip()
+                
+                # Check for meaningful overlap (not just small fragments)
+                if len(last_line) > 5 and len(first_overlap_line) > 5:
+                    # If one is a subset of the other
+                    if last_line in first_overlap_line or first_overlap_line in last_line:
+                        # Found a match at this line
+                        return "\n".join(prev_lines[:last_line_idx]) + "\n" + overlap + continuation
+        
+        # No good match found, use basic joining as fallback
+        return previous + "\n" + continuation
+    
+    def _clean_overlap_markers(self, content: str, marker: str) -> str:
+        """Remove any remaining overlap markers from the final content"""
+        if marker in content:
+            # Split by marker and rejoin without the markers
+            parts = content.split(marker)
+            # If we have an odd number of parts, the markers were paired
+            if len(parts) % 2 == 1:
+                # Keep first part, then every other part (skipping overlap blocks)
+                return parts[0] + "".join(parts[2::2])
+            else:
+                # Keep first part, then every other part
+                return parts[0] + "".join(parts[1::2])
+        return content
 
     def _process_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
         """
@@ -291,7 +433,7 @@ class BaseLLM:
             processed_content = self._get_llm_content(content)
             
             # Debug logging for response processing
-            if self._should_log('DEBUG'):
+            if self._should_log(LogDetail.DEBUG):
                 logger.debug("agent.processing_response",
                             content_length=len(str(processed_content)) if processed_content else 0,
                             response_type=type(raw_response).__name__,
@@ -328,6 +470,7 @@ class BaseLLM:
                 "timestamp": datetime.utcnow().isoformat(),
                 "error": error_msg
             }
+
 
     def _get_model_str(self) -> str:
         """Get the appropriate model string for the provider"""

@@ -192,6 +192,12 @@ class BaseLineage:
         
         return event_id, parent_id, step, path
 
+    """
+    Path: c4h_agents/agents/base_lineage.py
+    Fix for duplicate data in lineage tracking events
+    """
+
+    # Updated _write_file_event method to prevent duplicating serialized content
     def _write_file_event(self, event: LineageEvent) -> None:
         """Write event to file system with basic serialization"""
         if not self.enabled or not self.lineage_dir:
@@ -205,13 +211,28 @@ class BaseLineage:
             # Determine how much data to include based on event detail level
             detail_level = self.config.get("event_detail_level", "full")
             
-            # Build event data dict
+            # Extract only necessary information from context to avoid nested serialization
+            context_info = {}
+            if isinstance(event.input_context, dict):
+                # Extract only high-level keys to prevent duplicating large nested structures
+                for key in ['workflow_run_id', 'agent_execution_id', 'parent_id', 'agent_type', 'step']:
+                    if key in event.input_context:
+                        context_info[key] = event.input_context[key]
+                
+                # Include input_data reference but not full content to avoid duplication
+                if 'input_data' in event.input_context:
+                    if isinstance(event.input_context['input_data'], dict):
+                        context_info['input_data_keys'] = list(event.input_context['input_data'].keys())
+                    else:
+                        context_info['input_data_type'] = type(event.input_context['input_data']).__name__
+            
+            # Build event data dict with minimal duplication
             event_data = {
                 "event_id": event.event_id,
                 "timestamp": event.timestamp.isoformat(),
                 "agent": event.agent_name,
                 "agent_type": event.agent_type,
-                "input_context": self._serialize_value(event.input_context),
+                "input_context_summary": context_info,  # Summarized context instead of full duplication
                 "messages": {
                     "system": event.messages.system if hasattr(event.messages, "system") else None,
                     "user": event.messages.user if hasattr(event.messages, "user") else None,
@@ -230,7 +251,28 @@ class BaseLineage:
             
             # Include raw output unless storing separately
             if not self.config.get("separate_input_output", False):
-                event_data["raw_output"] = self._serialize_value(event.raw_output)
+                # Store simplified output summary or hash instead of full output
+                if isinstance(event.raw_output, dict):
+                    # For dictionaries, store only keys and general structure
+                    event_data["raw_output_summary"] = {
+                        "type": "dict",
+                        "keys": list(event.raw_output.keys()),
+                        "size": len(str(event.raw_output))
+                    }
+                elif hasattr(event.raw_output, "choices") and hasattr(event.raw_output.choices[0], "message"):
+                    # For LLM responses, extract just the content
+                    event_data["raw_output_summary"] = {
+                        "type": "llm_response",
+                        "content_preview": str(event.raw_output.choices[0].message.content)[:100] + "..." 
+                            if len(str(event.raw_output.choices[0].message.content)) > 100 
+                            else str(event.raw_output.choices[0].message.content)
+                    }
+                else:
+                    # For other types, just note the type and size
+                    event_data["raw_output_summary"] = {
+                        "type": type(event.raw_output).__name__,
+                        "size": len(str(event.raw_output)) if hasattr(event.raw_output, "__len__") else "unknown"
+                    }
             
             # Write main event file
             with open(temp_file, 'w') as f:
@@ -271,7 +313,7 @@ class BaseLineage:
                         lineage_dir=str(self.lineage_dir), 
                         agent=event.agent_name,
                         event_id=event.event_id)
-
+            
     def track_llm_interaction(self,
                             context: Dict[str, Any],
                             messages: LLMMessages,
