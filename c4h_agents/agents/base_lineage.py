@@ -192,14 +192,10 @@ class BaseLineage:
         
         return event_id, parent_id, step, path
 
-    """
-    Path: c4h_agents/agents/base_lineage.py
-    Fix for duplicate data in lineage tracking events
-    """
+    # Path: c4h_agents/agents/base_lineage.py
 
-    # Updated _write_file_event method to prevent duplicating serialized content
     def _write_file_event(self, event: LineageEvent) -> None:
-        """Write event to file system with basic serialization"""
+        """Write event to file system with minimal processing"""
         if not self.enabled or not self.lineage_dir:
             return
             
@@ -208,104 +204,44 @@ class BaseLineage:
             event_file = events_dir / f"{event.event_id}.json"
             temp_file = events_dir / f"{event.event_id}.tmp"
             
-            # Determine how much data to include based on event detail level
-            detail_level = self.config.get("event_detail_level", "full")
-            
-            # Extract only necessary information from context to avoid nested serialization
-            context_info = {}
-            if isinstance(event.input_context, dict):
-                # Extract only high-level keys to prevent duplicating large nested structures
-                for key in ['workflow_run_id', 'agent_execution_id', 'parent_id', 'agent_type', 'step']:
-                    if key in event.input_context:
-                        context_info[key] = event.input_context[key]
-                
-                # Include input_data reference but not full content to avoid duplication
-                if 'input_data' in event.input_context:
-                    if isinstance(event.input_context['input_data'], dict):
-                        context_info['input_data_keys'] = list(event.input_context['input_data'].keys())
-                    else:
-                        context_info['input_data_type'] = type(event.input_context['input_data']).__name__
-            
-            # Build event data dict with minimal duplication
+            # Create clear, complete event structure without duplication
             event_data = {
                 "event_id": event.event_id,
                 "timestamp": event.timestamp.isoformat(),
-                "agent": event.agent_name,
-                "agent_type": event.agent_type,
-                "input_context_summary": context_info,  # Summarized context instead of full duplication
-                "messages": {
-                    "system": event.messages.system if hasattr(event.messages, "system") else None,
-                    "user": event.messages.user if hasattr(event.messages, "user") else None,
-                    "formatted_request": event.messages.formatted_request if hasattr(event.messages, "formatted_request") else None,
-                    "timestamp": event.messages.timestamp.isoformat() if hasattr(event.messages, "timestamp") else None
+                "agent": {
+                    "name": event.agent_name,
+                    "type": event.agent_type,
+                    "execution_id": event.agent_execution_id if hasattr(event, "agent_execution_id") else None
                 },
+                "workflow": {
+                    "run_id": event.run_id,
+                    "parent_id": event.parent_id,
+                    "step": event.step,
+                    "execution_path": event.execution_path
+                },
+                "llm_input": {
+                    "system_message": event.messages.system if hasattr(event.messages, "system") else None,
+                    "user_message": event.messages.user if hasattr(event.messages, "user") else None,
+                    "formatted_request": event.messages.formatted_request if hasattr(event.messages, "formatted_request") else None,
+                },
+                "llm_output": self._serialize_value(event.raw_output),
                 "metrics": self._serialize_value(event.metrics),
-                "run_id": event.run_id,
-                "parent_id": event.parent_id,
-                "error": event.error,
-                "step": event.step,
-                "execution_path": event.execution_path,
-                "input_hash": event.input_hash,
-                "output_hash": event.output_hash
+                "error": event.error
             }
             
-            # Include raw output unless storing separately
-            if not self.config.get("separate_input_output", False):
-                # Store simplified output summary or hash instead of full output
-                if isinstance(event.raw_output, dict):
-                    # For dictionaries, store only keys and general structure
-                    event_data["raw_output_summary"] = {
-                        "type": "dict",
-                        "keys": list(event.raw_output.keys()),
-                        "size": len(str(event.raw_output))
-                    }
-                elif hasattr(event.raw_output, "choices") and hasattr(event.raw_output.choices[0], "message"):
-                    # For LLM responses, extract just the content
-                    event_data["raw_output_summary"] = {
-                        "type": "llm_response",
-                        "content_preview": str(event.raw_output.choices[0].message.content)[:100] + "..." 
-                            if len(str(event.raw_output.choices[0].message.content)) > 100 
-                            else str(event.raw_output.choices[0].message.content)
-                    }
-                else:
-                    # For other types, just note the type and size
-                    event_data["raw_output_summary"] = {
-                        "type": type(event.raw_output).__name__,
-                        "size": len(str(event.raw_output)) if hasattr(event.raw_output, "__len__") else "unknown"
-                    }
-            
-            # Write main event file
+            # Write to temp file first (atomic operation)
             with open(temp_file, 'w') as f:
-                json.dump(event_data, f, indent=2)
-                    
-            temp_file.rename(event_file)
-            
-            # If configured, write full input/output to separate files
-            if self.config.get("separate_input_output", False):
-                # Save input messages
-                input_file = self.lineage_dir / "inputs" / f"{event.event_id}_input.json"
-                with open(input_file, 'w') as f:
-                    json.dump({
-                        "event_id": event.event_id,
-                        "system": event.messages.system if hasattr(event.messages, "system") else None,
-                        "user": event.messages.user if hasattr(event.messages, "user") else None,
-                    }, f, indent=2)
+                json.dump(event_data, f, indent=2, default=str)
                 
-                # Save output
-                output_file = self.lineage_dir / "outputs" / f"{event.event_id}_output.json"
-                with open(output_file, 'w') as f:
-                    json.dump({
-                        "event_id": event.event_id,
-                        "raw_output": self._serialize_value(event.raw_output),
-                    }, f, indent=2)
+            # Rename to final filename (atomic operation)
+            temp_file.rename(event_file)
             
             logger.info("lineage.event_saved", 
                     path=str(event_file), 
                     agent=event.agent_name, 
                     run_id=event.run_id,
                     event_size=event_file.stat().st_size,
-                    event_id=event.event_id,
-                    parent_id=event.parent_id)
+                    event_id=event.event_id)
                 
         except Exception as e:
             logger.error("lineage.write_failed", 
@@ -313,7 +249,7 @@ class BaseLineage:
                         lineage_dir=str(self.lineage_dir), 
                         agent=event.agent_name,
                         event_id=event.event_id)
-            
+    
     def track_llm_interaction(self,
                             context: Dict[str, Any],
                             messages: LLMMessages,
