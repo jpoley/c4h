@@ -139,7 +139,8 @@ class BaseLineage:
         return generated_id
     
     def _serialize_value(self, value: Any) -> Any:
-        """Serialize a single value with type handling"""
+        """Serialize a single value with enhanced type handling for LLM responses"""
+        # Handle None, primitives as before
         if isinstance(value, (int, float, str, bool, type(None))):
             return value
         elif isinstance(value, Path):
@@ -150,10 +151,52 @@ class BaseLineage:
             return [self._serialize_value(v) for v in value]
         elif isinstance(value, dict):
             return {k: self._serialize_value(v) for k, v in value.items()}
-        elif hasattr(value, 'to_dict'):
+        
+        # Handle LLM response objects - check for common response structure
+        if hasattr(value, 'choices') and value.choices:
+            try:
+                # Standard LLM response format
+                if hasattr(value.choices[0], 'message') and hasattr(value.choices[0].message, 'content'):
+                    response_data = {
+                        "content": value.choices[0].message.content,
+                        "finish_reason": getattr(value.choices[0], 'finish_reason', None),
+                        "model": getattr(value, 'model', None)
+                    }
+                    
+                    # Add usage if available
+                    if hasattr(value, 'usage'):
+                        usage = value.usage
+                        response_data["usage"] = {
+                            "prompt_tokens": getattr(usage, 'prompt_tokens', 0),
+                            "completion_tokens": getattr(usage, 'completion_tokens', 0),
+                            "total_tokens": getattr(usage, 'total_tokens', 0)
+                        }
+                    return response_data
+            except (AttributeError, IndexError):
+                pass
+        
+        # Handle Usage objects directly 
+        if type(value).__name__ == 'Usage':
+            return {
+                "prompt_tokens": getattr(value, 'prompt_tokens', 0),
+                "completion_tokens": getattr(value, 'completion_tokens', 0),
+                "total_tokens": getattr(value, 'total_tokens', 0)
+            }
+        
+        # Handle StreamedResponse (from BaseLLM._get_completion_with_continuation)
+        if "StreamedResponse" in str(type(value)):
+            try:
+                if hasattr(value, 'choices') and value.choices:
+                    return {"content": value.choices[0].message.content}
+            except (AttributeError, IndexError):
+                pass
+                
+        # Handle custom objects with to_dict method
+        if hasattr(value, 'to_dict'):
             return value.to_dict()
-        else:
-            return str(value)
+        
+        # Fall back to string representation with object type indicator
+        return f"{str(value)} (type: {type(value).__name__})"
 
     def _extract_lineage_metadata(self, context: Dict[str, Any]) -> Tuple[str, Optional[str], Optional[int], Optional[List[str]]]:
         """
