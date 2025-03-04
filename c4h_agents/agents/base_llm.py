@@ -8,14 +8,13 @@ import time
 from datetime import datetime
 import litellm
 from litellm import completion
-from c4h_agents.agents.types import LLMProvider, LogDetail  # Added missing imports
+from c4h_agents.agents.types import LLMProvider, LogDetail
 from c4h_agents.utils.logging import get_logger
 
 logger = get_logger()
 
 class BaseLLM:
     """LLM interaction layer"""
-
 
     def _get_completion_with_continuation(
             self, 
@@ -24,7 +23,8 @@ class BaseLLM:
         ) -> Tuple[str, Any]:
             """
             Get completion with automatic continuation handling.
-            Uses overlap mechanism to ensure proper joining of continued responses.
+            Uses multi-level overlap detection for reliable response joining.
+            Handles overload conditions with exponential backoff.
             
             Args:
                 messages: List of message dictionaries with role and content
@@ -43,6 +43,20 @@ class BaseLLM:
                 
                 # Get provider config
                 provider_config = self._get_provider_config(self.provider)
+                
+                # Track diagnostics for troubleshooting
+                diagnostics = {
+                    "attempts": 0,
+                    "overlap_attempts": 0,
+                    "exact_matches": 0,
+                    "hash_matches": 0,
+                    "token_matches": 0,
+                    "fallbacks": 0
+                }
+                
+                logger.info("llm.continuation_starting", 
+                        model=self.model_str,
+                        max_attempts=max_tries)
                 
                 # Basic completion parameters
                 completion_params = {
@@ -127,15 +141,88 @@ class BaseLLM:
                             model=self.model,
                             max_tokens=completion_params.get("max_tokens"))
 
-                # Define a single, generic overlap marker
-                overlap_marker = "###CONTENT_OVERLAP###"
+                # Check if we're dealing with Python/Code or JSON
+                is_code = any("```" in msg.get("content", "") or "def " in msg.get("content", "") 
+                            for msg in messages if msg.get("role") == "user")
+                is_json = any("json" in msg.get("content", "").lower() or 
+                            msg.get("content", "").strip().startswith("{") or 
+                            msg.get("content", "").strip().startswith("[") 
+                            for msg in messages if msg.get("role") == "user")
+
+                # Define explicit overlap markers
+                begin_marker = "---BEGIN_EXACT_OVERLAP---"
+                end_marker = "---END_EXACT_OVERLAP---"
 
                 # Start completion loop with continuation handling
                 while attempt < max_tries:
                     if attempt > 0:
+                        diagnostics["attempts"] += 1
+                        
+                        # Calculate appropriate overlap size based on content
+                        content_lines = accumulated_content.splitlines()
+                        
+                        # Adaptive overlap size based on content length and type
+                        if is_code:
+                            # For code, use more lines to ensure complete syntactic blocks
+                            overlap_size = min(max(5, min(len(content_lines) // 3, 15)), len(content_lines))
+                        else:
+                            # For text/JSON, fewer lines are usually sufficient
+                            overlap_size = min(max(3, min(len(content_lines) // 4, 10)), len(content_lines))
+                        
+                        last_lines = content_lines[-overlap_size:]
+                        overlap_context = "\n".join(last_lines)
+                        
+                        # Create diagnostic snapshot of content state
+                        content_snapshot = {
+                            "last_chars": accumulated_content[-50:],
+                            "has_braces": "{" in overlap_context or "}" in overlap_context,
+                            "has_brackets": "[" in overlap_context or "]" in overlap_context,
+                            "has_parens": "(" in overlap_context or ")" in overlap_context,
+                            "open_braces": overlap_context.count("{") - overlap_context.count("}"),
+                            "open_brackets": overlap_context.count("[") - overlap_context.count("]"),
+                            "open_parens": overlap_context.count("(") - overlap_context.count(")")
+                        }
+                        
                         logger.info("llm.continuation_attempt",
                                 attempt=attempt,
-                                messages_count=len(messages))
+                                messages_count=len(messages),
+                                overlap_lines=overlap_size,
+                                content_state=content_snapshot)
+                        
+                        # Choose appropriate continuation prompt based on content type
+                        if is_code:
+                            continuation_prompt = (
+                                "Continue the code exactly from where you left off.\n\n"
+                                "You MUST start by repeating these EXACT lines:\n\n"
+                                f"{begin_marker}\n{overlap_context}\n{end_marker}\n\n"
+                                "Do not modify these lines in any way - copy them exactly. "
+                                "After repeating these lines exactly, continue with the next part of the code. "
+                                "Maintain exact format, indentation, and structure. "
+                                "Do not add any explanatory text, comments, or markers outside the overlap section."
+                            )
+                        elif is_json:
+                            continuation_prompt = (
+                                "Continue the JSON response exactly from where you left off.\n\n"
+                                "You MUST start by repeating these EXACT lines:\n\n"
+                                f"{begin_marker}\n{overlap_context}\n{end_marker}\n\n"
+                                "Do not modify these lines in any way - copy them exactly. "
+                                "After repeating these lines exactly, continue with the next part of the JSON. "
+                                "Make sure your response starts with this overlap to ensure proper continuity."
+                            )
+                        else:
+                            continuation_prompt = (
+                                "Continue exactly from where you left off.\n\n"
+                                "You MUST start by repeating these EXACT lines:\n\n"
+                                f"{begin_marker}\n{overlap_context}\n{end_marker}\n\n"
+                                "Do not modify these lines in any way - copy them exactly. "
+                                "After repeating these lines exactly, continue where you left off. "
+                                "Do not add any explanatory text or markers."
+                            )
+                        
+                        # Add assistant and user messages for continuation
+                        messages.append({"role": "assistant", "content": accumulated_content})
+                        messages.append({"role": "user", "content": continuation_prompt})
+                        completion_params["messages"] = messages
                     
                     try:
                         if use_streaming:
@@ -197,43 +284,69 @@ class BaseLLM:
                         # Extract current content from the response
                         current_content = result['response']
                         
-                        # Handle continuation based on attempt number
+                        # For continuation attempts, handle joining with multi-level strategy
                         if attempt > 0:
-                            # Use overlap marker to join content accurately
-                            accumulated_content = self._join_with_overlap(
-                                accumulated_content, 
-                                current_content, 
-                                overlap_marker
-                            )
+                            # First, look for explicit markers
+                            cleaned_content = self._clean_overlap_markers(current_content, begin_marker, end_marker)
+                            
+                            # If markers found and properly cleaned, use the cleaned content
+                            if cleaned_content != current_content:
+                                logger.info("llm.markers_found_and_cleaned")
+                                current_content = cleaned_content
+                                diagnostics["exact_matches"] += 1
+                            else:
+                                # Markers not found or not properly formatted, use advanced joining
+                                diagnostics["overlap_attempts"] += 1
+                                
+                                # If accumulated_content and last_lines are available, use sophisticated joining
+                                if accumulated_content and last_lines:
+                                    # Log the first part of current content for debugging
+                                    logger.debug("llm.overlap_matching_attempt",
+                                                overlap_lines=len(last_lines),
+                                                expected_overlap_preview=overlap_context[:200] + "..." if len(overlap_context) > 200 else overlap_context,
+                                                received_preview=current_content[:200] + "..." if len(current_content) > 200 else current_content)
+                                    
+                                    # Try multi-level matching with full diagnostics
+                                    joined_content, match_method = self._join_with_overlap(
+                                        accumulated_content, 
+                                        current_content,
+                                        last_lines,
+                                        is_code
+                                    )
+                                    
+                                    # Update diagnostics based on match method
+                                    if match_method == "exact":
+                                        diagnostics["exact_matches"] += 1
+                                    elif match_method == "hash":
+                                        diagnostics["hash_matches"] += 1
+                                    elif match_method == "token":
+                                        diagnostics["token_matches"] += 1
+                                    else:
+                                        diagnostics["fallbacks"] += 1
+                                    
+                                    # Update accumulated content
+                                    accumulated_content = joined_content
+                                else:
+                                    # No previous content or overlap lines, use directly
+                                    accumulated_content += current_content
+                                    diagnostics["fallbacks"] += 1
                         else:
                             # First response, just use it directly
                             accumulated_content = current_content
+                        
+                        # Validate joined content for potential syntax errors
+                        if is_code and attempt > 0:
+                            is_valid = self._validate_joined_content(accumulated_content)
+                            if not is_valid:
+                                logger.warning("llm.syntax_validation_warning", 
+                                            attempt=attempt, 
+                                            continuation_state="potential_syntax_issue")
                         
                         # Check if we need to continue
                         finish_reason = getattr(response.choices[0], 'finish_reason', None)
                         
                         if finish_reason == 'length':
                             logger.info("llm.length_limit_reached", attempt=attempt)
-                            
-                            # Get the last part of content for overlap (up to 200 chars)
-                            overlap_length = 200
-                            last_chunk = accumulated_content[-overlap_length:] if len(accumulated_content) > overlap_length else accumulated_content
-                            
-                            # Create a continuation prompt with the overlap
-                            continuation_prompt = (
-                                f"Continue exactly from where you left off. Here's the last part I received:\n\n"
-                                f"{overlap_marker}\n{last_chunk}\n{overlap_marker}\n\n"
-                                f"Continue from this point, making sure your response starts with the overlap marker, "
-                                f"followed by the overlapping text, and then continue with new content. "
-                                f"The overlap section helps me join the pieces correctly."
-                            )
-                            
-                            # Add assistant and user messages for continuation
-                            messages.append({"role": "assistant", "content": current_content})
-                            messages.append({"role": "user", "content": continuation_prompt})
-                            
-                            # Update parameters for next request
-                            completion_params["messages"] = messages
                             attempt += 1
                             continue
                         else:
@@ -269,62 +382,373 @@ class BaseLLM:
                                 attempt=attempt)
                         raise
 
+                # Log summary of continuations
+                if attempt > 0:
+                    logger.info("llm.continuation_summary", 
+                            total_attempts=attempt,
+                            model=self.model_str, 
+                            total_length=len(accumulated_content),
+                            diagnostics=diagnostics)
+
                 # Update the content in the final response
                 if final_response and hasattr(final_response, 'choices') and final_response.choices:
                     final_response.choices[0].message.content = accumulated_content
 
-                # Remove any remaining overlap markers from final content
-                if overlap_marker in accumulated_content:
-                    accumulated_content = self._clean_overlap_markers(accumulated_content, overlap_marker)
-                
-                self.metrics["continuation_attempts"] = attempt + 1
+                # Track actual continuation count for metrics
+                self.metrics["continuation_attempts"] = attempt
                 return accumulated_content, final_response
 
             except Exception as e:
-                logger.error("llm.continuation_failed", error=str(e))
+                logger.error("llm.continuation_failed", error=str(e), error_type=type(e).__name__)
                 raise
-    
-    def _join_with_overlap(self, previous: str, current: str, marker: str) -> str:
+
+    def _join_with_overlap(self, previous: str, current: str, overlap_lines: List[str], is_code: bool = False) -> Tuple[str, str]:
         """
-        Join content using the overlap marker as an alignment guide.
-        Works with any content type by finding exact overlapping text.
+        Join content using multi-level overlap detection.
+        Tries multiple strategies to find the best join point, with full diagnostics.
         
         Args:
             previous: First chunk of content
-            current: Continuation chunk 
-            marker: Overlap marker string
+            current: Continuation chunk
+            overlap_lines: Expected overlap lines from previous content
+            is_code: Whether the content is code (for special handling)
             
         Returns:
-            Joined content with proper alignment
+            Tuple of (joined_content, match_method)
         """
-        # Check if marker exists in the continuation
-        if marker not in current:
-            # No marker found, directly append with basic cleaning
-            return self._basic_join(previous, current)
+        import hashlib
         
-        # Extract content sections using the marker
-        marker_parts = current.split(marker, 2)
+        # Check edge cases
+        if not previous or not current:
+            return previous + current, "direct"
         
-        # We expect the format: [before_marker, overlap_text, continuation_text]
-        if len(marker_parts) < 3:
-            # Not enough marker parts, use everything after the first marker
-            content_after_marker = marker_parts[-1] if len(marker_parts) > 1 else current
-            return previous + content_after_marker
+        # LEVEL 1: Try exact overlap detection
+        overlap_text = "\n".join(overlap_lines)
         
-        # Extract the overlap text between the markers
-        overlap_text = marker_parts[1].strip()
-        continuation_text = marker_parts[2].strip()
+        # Check if our expected overlap is found at the beginning of current content
+        current_lines = current.splitlines()
+        if len(current_lines) >= len(overlap_lines):
+            current_overlap = "\n".join(current_lines[:len(overlap_lines)])
+            
+            # Check for exact match of the overlap text
+            if current_overlap == overlap_text:
+                # Found exact match, join after removing overlap
+                logger.info("llm.exact_overlap_match_found", overlap_lines=len(overlap_lines))
+                return previous + "\n" + "\n".join(current_lines[len(overlap_lines):]), "exact"
         
-        # Find the exact overlap in the previous content
-        if overlap_text and overlap_text in previous:
-            # Find the last occurrence of the overlap
-            overlap_pos = previous.rfind(overlap_text)
-            if overlap_pos >= 0:
-                # Join at the exact overlap point
-                return previous[:overlap_pos] + overlap_text + continuation_text
+        # LEVEL 2: Try normalized hash matching (ignores whitespace differences)
+        try:
+            # Create normalized hash of expected overlap
+            def normalize_for_hash(text):
+                # Remove whitespace and normalize case for non-code
+                normalized = ''.join(text.lower().split()) if not is_code else ''.join(text.split())
+                return normalized
+                
+            expected_hash = hashlib.md5(normalize_for_hash(overlap_text).encode()).hexdigest()
+            
+            # Try to find a matching section in the current content
+            for i in range(min(20, len(current_lines))):  # Check first 20 positions
+                if i + len(overlap_lines) <= len(current_lines):
+                    window = "\n".join(current_lines[i:i+len(overlap_lines)])
+                    window_hash = hashlib.md5(normalize_for_hash(window).encode()).hexdigest()
+                    
+                    if window_hash == expected_hash:
+                        # Found hash match, join after removing overlap
+                        logger.info("llm.hash_match_found", position=i, overlap_lines=len(overlap_lines))
+                        return previous + "\n" + "\n".join(current_lines[i+len(overlap_lines):]), "hash"
+        except Exception as e:
+            logger.warning("llm.hash_matching_failed", error=str(e))
         
-        # If no exact match, try line-by-line matching for better alignment
-        return self._fuzzy_line_join(previous, overlap_text, continuation_text)
+        # LEVEL 3: Try token-level matching for partial overlaps
+        try:
+            # Find best overlap point using token-level matching
+            best_point = self._find_best_overlap_point(previous, current)
+            if best_point > 0:
+                logger.info("llm.token_match_found", token_position=best_point)
+                return previous + current[best_point:], "token"
+        except Exception as e:
+            logger.warning("llm.token_matching_failed", error=str(e))
+        
+        # LEVEL 4: Special handling for code - check for syntax structures
+        if is_code:
+            try:
+                # Log details about syntax state
+                brace_balance = overlap_text.count("{") - overlap_text.count("}")
+                bracket_balance = overlap_text.count("[") - overlap_text.count("]")
+                paren_balance = overlap_text.count("(") - overlap_text.count(")")
+                
+                logger.info("llm.code_syntax_state", 
+                        brace_balance=brace_balance, 
+                        bracket_balance=bracket_balance,
+                        paren_balance=paren_balance,
+                        has_def=("def " in overlap_text),
+                        has_class=("class " in overlap_text))
+                        
+                # Check for function/method boundary issues
+                if "def " in previous[-200:] and "def " in current[:200]:
+                    # Extract function names to check for duplication
+                    prev_func_match = previous[-200:].rfind("def ")
+                    curr_func_match = current[:200].find("def ")
+                    
+                    if prev_func_match >= 0 and curr_func_match >= 0:
+                        prev_func_line = previous[-200+prev_func_match:].splitlines()[0]
+                        curr_func_line = current[curr_func_match:curr_func_match+200].splitlines()[0]
+                        
+                        logger.debug("llm.function_boundary_check",
+                                prev_func_preview=prev_func_line,
+                                curr_func_preview=curr_func_line)
+                        
+                        # Check if they appear to be the same function
+                        if prev_func_line.split("(")[0] == curr_func_line.split("(")[0]:
+                            # Skip duplicate function definition 
+                            func_end_pos = current.find(":", curr_func_match)
+                            if func_end_pos > 0:
+                                logger.info("llm.duplicate_function_detected", 
+                                        function=prev_func_line.split("(")[0])
+                                return previous + current[func_end_pos+1:].lstrip(), "code-structure"
+            except Exception as e:
+                logger.warning("llm.code_analysis_failed", error=str(e))
+        
+        # LEVEL 5: Fall back to syntax-aware basic joining
+        logger.warning("llm.all_overlap_strategies_failed", 
+                    falling_back="basic_join",
+                    overlap_lines=len(overlap_lines))
+        return self._basic_join(previous, current, is_code), "fallback"
+
+    def _find_best_overlap_point(self, previous: str, current: str, min_tokens: int = 5) -> int:
+        """
+        Find best overlap point using token-level matching.
+        Looks for a sequence of tokens that appear in both previous and current.
+        
+        Args:
+            previous: First chunk of content
+            current: Continuation chunk
+            min_tokens: Minimum number of consecutive tokens to consider a match
+            
+        Returns:
+            Position in current content where continuation should start (after overlap)
+        """
+        # Get last part of previous and first part of current content
+        prev_tail = previous[-1000:] if len(previous) > 1000 else previous
+        curr_head = current[:1000] if len(current) > 1000 else current
+        
+        # Simple tokenization by whitespace and punctuation
+        def simple_tokenize(text):
+            import re
+            return re.findall(r'\w+|[^\w\s]', text)
+        
+        prev_tokens = simple_tokenize(prev_tail)
+        curr_tokens = simple_tokenize(curr_head)
+        
+        # Look for matching token sequences
+        best_match_len = 0
+        best_match_pos = 0
+        
+        for i in range(len(prev_tokens) - min_tokens + 1):
+            prev_seq = prev_tokens[i:i + min_tokens]
+            
+            for j in range(len(curr_tokens) - min_tokens + 1):
+                curr_seq = curr_tokens[j:j + min_tokens]
+                
+                # Compare token sequences
+                if prev_seq == curr_seq:
+                    # Found match, see how long it continues
+                    match_len = min_tokens
+                    while (i + match_len < len(prev_tokens) and 
+                        j + match_len < len(curr_tokens) and 
+                        prev_tokens[i + match_len] == curr_tokens[j + match_len]):
+                        match_len += 1
+                    
+                    # Track best match
+                    if match_len > best_match_len:
+                        best_match_len = match_len
+                        best_match_pos = j + match_len
+        
+        # Only return a position if we found a good match
+        if best_match_len >= min_tokens:
+            # Calculate approximate character position
+            char_pos = 0
+            for i in range(best_match_pos):
+                if i < len(curr_tokens):
+                    char_pos += len(curr_tokens[i]) + 1  # +1 for spacing
+            
+            logger.debug("llm.token_match_details", 
+                    match_length=best_match_len, 
+                    token_position=best_match_pos,
+                    char_position=char_pos)
+            return char_pos
+        
+        # No good match found
+        return 0
+
+    def _validate_joined_content(self, content: str) -> bool:
+        """
+        Basic syntax validation for potentially problematic patterns.
+        Checks for unbalanced structures and other common issues.
+        
+        Args:
+            content: The content to validate
+            
+        Returns:
+            True if validation passes, False if issues detected
+        """
+        # Check for balanced braces, brackets, parentheses
+        brace_balance = content.count("{") - content.count("}")
+        bracket_balance = content.count("[") - content.count("]")
+        paren_balance = content.count("(") - content.count(")")
+        
+        # Check for incomplete Python blocks
+        incomplete_block = False
+        lines = content.splitlines()
+        block_indent = None
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            # Check for block starters without corresponding blocks
+            if stripped.endswith(":") and i < len(lines) - 1:
+                indent = len(line) - len(line.lstrip())
+                next_indent = len(lines[i+1]) - len(lines[i+1].lstrip())
+                if next_indent <= indent:  # Next line should be indented if block continues
+                    incomplete_block = True
+                    break
+        
+        if brace_balance != 0 or bracket_balance != 0 or paren_balance != 0 or incomplete_block:
+            logger.warning("llm.syntax_validation_failed",
+                        brace_balance=brace_balance,
+                        bracket_balance=bracket_balance,
+                        paren_balance=paren_balance,
+                        incomplete_block=incomplete_block)
+            return False
+        return True
+
+    def _clean_overlap_markers(self, content: str, begin_marker: str, end_marker: str) -> str:
+        """
+        Remove overlap markers and extract the proper continuation.
+        Uses markers to extract the continuation after the overlap.
+        
+        Args:
+            content: The content to clean
+            begin_marker: Start marker for overlap section
+            end_marker: End marker for overlap section
+            
+        Returns:
+            Content with overlap section properly handled
+        """
+        # Check if both markers exist in the content
+        if begin_marker not in content or end_marker not in content:
+            return content
+        
+        # Find positions of markers
+        begin_pos = content.find(begin_marker)
+        end_pos = content.find(end_marker, begin_pos)
+        
+        if begin_pos >= 0 and end_pos > begin_pos:
+            # Found both markers in the expected sequence
+            after_marker = content[end_pos + len(end_marker):].lstrip()
+            logger.debug("llm.overlap_markers_cleaned", 
+                    begin_pos=begin_pos, 
+                    end_pos=end_pos, 
+                    content_after_markers=len(after_marker))
+            return after_marker
+        
+        # Markers found but not in expected sequence
+        return content
+
+    def _basic_join(self, previous: str, current: str, is_code: bool = False) -> str:
+        """
+        Join content with basic cleaning and syntax awareness.
+        Handles common formatting and indentation issues at join point.
+        
+        Args:
+            previous: First chunk of content
+            current: Continuation chunk
+            is_code: Whether content is code (for special handling)
+            
+        Returns:
+            Joined content with basic syntax fixes
+        """
+        # Clean up whitespace at the join point
+        previous = previous.rstrip()
+        current = current.lstrip()
+        
+        # For code content, do special syntax checking
+        if is_code:
+            # Check for syntax state at the join point
+            open_braces = previous.count("{") - previous.count("}")
+            open_brackets = previous.count("[") - previous.count("]")
+            open_parens = previous.count("(") - previous.count(")")
+            
+            # Check if we're inside a string
+            single_quotes = previous.count("'") % 2
+            double_quotes = previous.count('"') % 2
+            in_string = single_quotes != 0 or double_quotes != 0
+            
+            # Check if we're at a line continuation
+            ends_with_continuation = previous.rstrip().endswith("\\")
+            
+            # Log details for debugging
+            logger.debug("llm.join_point_syntax_state",
+                    open_braces=open_braces,
+                    open_brackets=open_brackets,
+                    open_parens=open_parens,
+                    in_string=in_string,
+                    ends_with_continuation=ends_with_continuation)
+            
+            # Handle specific code patterns
+            if open_braces > 0 and current.lstrip().startswith("}"):
+                # Already have closing brace at start of continuation
+                return previous + "\n" + current
+            
+            if open_brackets > 0 and current.lstrip().startswith("]"):
+                # Already have closing bracket at start of continuation
+                return previous + "\n" + current
+            
+            if open_parens > 0 and current.lstrip().startswith(")"):
+                # Already have closing paren at start of continuation
+                return previous + "\n" + current
+            
+            # Check for function/class context continuations
+            if previous.rstrip().endswith(":") or previous.rstrip().endswith("{"):
+                # Block starter, ensure newline before continuation
+                return previous + "\n" + current
+        
+        # Handle JSON special cases
+        if previous.rstrip().endswith(",") and current.lstrip().startswith(","):
+            # Remove duplicate comma
+            current = current[1:].lstrip()
+        
+        # Default joining with newline to maintain readability
+        return previous + "\n" + current
+
+
+    def _fuzzy_line_join(self, previous: str, overlap_lines: List[str], current: str) -> str:
+        """
+        Join content using line-by-line fuzzy matching when exact overlap fails.
+        Works for both code and text content.
+        """
+        # Split current content into lines for analysis
+        current_lines = current.splitlines()
+        
+        # Edge case - if no lines to match
+        if not overlap_lines or not current_lines:
+            return previous + "\n" + current
+        
+        # Try to find a match for the first few lines of the overlap
+        match_size = min(3, len(overlap_lines))
+        first_match_lines = overlap_lines[:match_size]
+        
+        for i in range(min(10, len(current_lines) - match_size + 1)):
+            # Check if the current window matches our expected first lines
+            window = current_lines[i:i+match_size]
+            if window == first_match_lines:
+                # Found a match, take everything after this match point
+                logger.debug("llm.fuzzy_match_found", 
+                           position=i, 
+                           match_size=match_size)
+                return previous + "\n" + "\n".join(current_lines[i+match_size:])
+        
+        # No good match found, fall back to basic joining
+        logger.debug("llm.no_overlap_found", falling_back="basic_join")
+        return self._basic_join(previous, current)
 
     def _basic_join(self, previous: str, current: str) -> str:
         """
@@ -352,63 +776,25 @@ class BaseLLM:
             return previous + " " + current
             
         return previous + current
-
-    def _fuzzy_line_join(self, previous: str, overlap: str, continuation: str) -> str:
-        """
-        Join content using line-by-line fuzzy matching when exact overlap fails.
-        Works for both code and text content.
-        """
-        # If no overlap provided, fall back to simple joining
-        if not overlap:
-            return previous + continuation
         
-        # Split into lines for analysis
-        prev_lines = previous.split("\n")
-        overlap_lines = overlap.split("\n")
-        
-        # Try to find a multi-line match first (most reliable)
-        if len(overlap_lines) >= 2:
-            # Use the first 2 lines of overlap as a search pattern
-            pattern = "\n".join(overlap_lines[:2])
-            pattern_pos = previous.rfind(pattern)
+    def _clean_overlap_markers(self, content: str, begin_marker: str, end_marker: str) -> str:
+        """
+        Remove overlap markers and extract the proper continuation.
+        Uses markers to find where the real content starts.
+        """
+        if begin_marker not in content or end_marker not in content:
+            return content
             
-            if pattern_pos >= 0:
-                # Found a match, join at this point
-                return previous[:pattern_pos] + overlap + continuation
+        # Find positions of markers
+        begin_pos = content.find(begin_marker)
+        end_pos = content.find(end_marker, begin_pos + len(begin_marker))
         
-        # Try matching single lines if multi-line matching fails
-        if prev_lines and overlap_lines:
-            # Look at last 3 lines of previous content
-            for i in range(min(3, len(prev_lines))):
-                last_line_idx = len(prev_lines) - 1 - i
-                if last_line_idx < 0:
-                    break
-                    
-                last_line = prev_lines[last_line_idx].strip()
-                first_overlap_line = overlap_lines[0].strip()
-                
-                # Check for meaningful overlap (not just small fragments)
-                if len(last_line) > 5 and len(first_overlap_line) > 5:
-                    # If one is a subset of the other
-                    if last_line in first_overlap_line or first_overlap_line in last_line:
-                        # Found a match at this line
-                        return "\n".join(prev_lines[:last_line_idx]) + "\n" + overlap + continuation
-        
-        # No good match found, use basic joining as fallback
-        return previous + "\n" + continuation
-    
-    def _clean_overlap_markers(self, content: str, marker: str) -> str:
-        """Remove any remaining overlap markers from the final content"""
-        if marker in content:
-            # Split by marker and rejoin without the markers
-            parts = content.split(marker)
-            # If we have an odd number of parts, the markers were paired
-            if len(parts) % 2 == 1:
-                # Keep first part, then every other part (skipping overlap blocks)
-                return parts[0] + "".join(parts[2::2])
-            else:
-                # Keep first part, then every other part
-                return parts[0] + "".join(parts[1::2])
+        if begin_pos >= 0 and end_pos > begin_pos:
+            # Found both markers, extract everything after the end marker
+            after_marker = content[end_pos + len(end_marker):].lstrip()
+            return after_marker
+            
+        # Markers not found in expected sequence, return original
         return content
 
     def _process_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
@@ -470,7 +856,6 @@ class BaseLLM:
                 "timestamp": datetime.utcnow().isoformat(),
                 "error": error_msg
             }
-
 
     def _get_model_str(self) -> str:
         """Get the appropriate model string for the provider"""

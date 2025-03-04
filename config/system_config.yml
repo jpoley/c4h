@@ -42,7 +42,6 @@ llm_config:
         - "o1"
         - "o1-mini"
         - "o3-mini"
-        - "o3-mini-high"
       litellm_params:
         retry: true
         max_retries: 3
@@ -212,8 +211,8 @@ llm_config:
           Do not add any processing or validation beyond what is specifically requested.
 
     semantic_fast_extractor:
-      provider: "anthropic"
-      model: "claude-3-5-sonnet-20241022"
+      provider: "openai"
+      model: "o3-mini" 
       temperature: 0
       prompts:
         system: |
@@ -251,8 +250,8 @@ llm_config:
           CRITICAL: Return raw JSON only. Do not wrap in code blocks or markdown.
 
     semantic_slow_extractor:
-      provider: "anthropic"
-      model: "claude-3-5-sonnet-20241022"
+      provider: "openai"
+      model: "o3-mini"  
       temperature: 0
       prompts:
         system: |
@@ -296,8 +295,8 @@ llm_config:
           4. No explanations or headers allowed or conversational text
 
     semantic_merge:
-      provider: "anthropic"
-      model: "claude-3-5-sonnet-20241022"
+      provider: "openai"
+      model: "o3-mini"  
       temperature: 0
       merge_config:
         preserve_formatting: true
