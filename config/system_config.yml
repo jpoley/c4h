@@ -540,5 +540,5 @@ logging:
     openai:
       level: "debug"
   truncate:
-    prefix_length: 10
-    suffix_length: 20
+    prefix_length: 30
+    suffix_length: 30
