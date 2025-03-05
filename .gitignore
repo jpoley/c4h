@@ -44,6 +44,7 @@ test_output/
 # Environment variables
 .env
 tests/test_projects
+tests/regulatorty_calculations
 backup_txt/
 .cache/
 .DS_Store/

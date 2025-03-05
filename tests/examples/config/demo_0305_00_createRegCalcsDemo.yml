@@ -1,0 +1,104 @@
+# Project settings
+project:
+  path: "./tests/regulatory_calculations/"
+  workspace_root: "workspaces"
+
+# Intent description
+intent:
+  description: |
+    Create a set of Python utilities and a main program using PySpark to perform regulatory calculations such as Liquidity Coverage Ratio (LCR) and other capital/liquidity metrics:
+    - Design a modular utility library to handle data extraction, transformation, and regulatory calculations.
+    - Assume input data is sourced from a regulatory schema in a database (e.g., tables like `regulatory_positions`, `cash_flows`, `market_data`).
+    - All configuration details (e.g., database connection, calculation parameters, file paths) must be read from a config file (e.g., `config.yml`).
+    - Implement a main program (`main.py`) that orchestrates the workflow:
+      1. Load configuration from `config.yml`.
+      2. Initialize a PySpark session.
+      3. Extract data from the regulatory schema using PySpark SQL.
+      4. Execute a series of regulatory calculations (e.g., LCR, Net Stable Funding Ratio - NSFR).
+      5. Output results to a specified location (e.g., database table or CSV file).
+    - Include logging throughout the codebase for debugging and observability:
+      - Replace any print statements with Python `logging` module.
+      - Configure logging with levels (e.g., INFO, DEBUG) and output to both console and a log file.
+    - Ensure scalability and performance optimization for large datasets using PySpark’s distributed computing capabilities.
+    - Add error handling for database connectivity, data quality issues, and calculation failures.
+    - Provide a sample `config.yml` file with placeholders for database credentials, schema details, and calculation parameters.
+
+    # Detailed requirements
+    requirements:
+      utilities_module:
+        file: "regulatory_utils.py"
+        functions:
+          - name: "load_config"
+            description: "Read and parse `config.yml` using `pyyaml`."
+          - name: "init_spark_session"
+            description: "Initialize a PySpark session with config parameters."
+          - name: "extract_data"
+            description: "Extract data from the database using PySpark SQL."
+          - name: "aggregate_cash_flows"
+            description: "Helper function to aggregate cash flows for calculations."
+          - name: "apply_haircuts"
+            description: "Helper function to apply haircuts to asset values."
+
+        calculations_module:
+          file: "regulatory_calculations.py"
+          functions:
+            - name: "calculate_lcr"
+              description: |
+                Calculate Liquidity Coverage Ratio (LCR):
+                - Input: PySpark DataFrame with cash inflows/outflows.
+                - Logic: Sum high-quality liquid assets (HQLA) and net cash outflows over 30 days.
+                - Output: LCR ratio and detailed breakdown as a PySpark DataFrame.
+            - name: "calculate_nsfr"
+              description: "Placeholder function for Net Stable Funding Ratio (NSFR) calculation."
+        main_program:
+          file: "main.py"
+          description: "Load config, initialize PySpark, run calculations in sequence, and save results."
+        config_file:
+          file: "config.yml"
+          structure:
+            database:
+              host: "placeholder_host"
+              port: 5432
+              database_name: "regulatory_db"
+              schema: "regulatory_schema"
+              credentials:
+                username: "placeholder_user"
+                password: "placeholder_password"
+            pyspark:
+              app_name: "RegulatoryCalculations"
+              master_url: "local[*]"
+              memory: "4g"
+            calculations:
+              lcr:
+                stress_period_days: 30
+                hqla_categories: ["cash", "gov_bonds"]
+            output:
+              type: "csv"
+              path: "output/regulatory_results"
+        logging:
+          config:
+            file_handler: "logs/regulatory_calc.log"
+            console_output: true
+            level: "INFO"
+
+# LLM configuration
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-7-sonnet-20250219"
+  agents:
+    discovery:
+      temperature: 0
+      tartxt_config:
+        script_path: "./c4h_agents/skills/tartxt.py"
+        input_paths: ["./regulatory_calculations/"]
+        exclusions: ["**/__pycache__/**"]
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-7-sonnet-20250219"
+      temperature: 0
+      extended_thinking:
+        enabled: false
+        budget_tokens: 32000
+    coder:
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-20241022"

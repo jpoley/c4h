@@ -33,14 +33,30 @@ class SemanticMerge(BaseAgent):
     def _get_original_content(self, file_path: str) -> Optional[str]:
         """Read original file content if it exists"""
         try:
+            # If self.project is defined, use its path resolution
             if self.project:
                 path = self.project.resolve_path(file_path)
             else:
+                # Otherwise use direct path
                 path = Path(file_path)
                 
-            if path.exists():
-                return path.read_text()
+            # Check if path exists and is a file
+            if path.is_file():
+                try:
+                    content = path.read_text()
+                    logger.debug("merge.read_original_success", 
+                                file_path=str(path), 
+                                content_length=len(content))
+                    return content
+                except Exception as e:
+                    logger.error("merge.read_file_error", 
+                                file_path=str(path), 
+                                error=str(e))
+                    return None
+            
+            logger.debug("merge.file_not_found", file_path=str(path))
             return None
+            
         except Exception as e:
             logger.error("merge.read_original_failed", error=str(e))
             return None
@@ -84,23 +100,64 @@ class SemanticMerge(BaseAgent):
 
             file_path = context.get('file_path')
             diff = context.get('diff')
+            content = context.get('content')
             
-            if not file_path or not diff:
+            if not file_path:
                 return AgentResponse(
                     success=False,
-                    error="Missing required file_path or diff",
+                    error="Missing required file_path",
+                    data=context
+                )
+            
+            # Handle content-only create operations directly
+            if context.get('type') == 'create' and content and not diff:
+                logger.info("merge.direct_content", 
+                           file_path=file_path, 
+                           content_length=len(content))
+                return AgentResponse(
+                    success=True,
+                    data={
+                        "response": content,
+                        "raw_output": content
+                    }
+                )
+                
+            # Require diff for non-create operations
+            if not diff and not context.get('type') == 'create':
+                return AgentResponse(
+                    success=False,
+                    error=f"Missing required diff for {file_path}",
                     data=context
                 )
 
-            # Get original content if file exists
-            original = self._get_original_content(file_path)
-            if not original and context.get('type') != 'create':
-                if not self.allow_partial:
-                    return AgentResponse(
-                        success=False,
-                        error=f"Original file not found: {file_path}",
-                        data=context
-                    )
+            # First try to get original from context
+            original = context.get('original')
+            
+            # If not in context but file exists, read it directly
+            if not original:
+                # Try to read file content directly
+                file_content = self._get_original_content(file_path)
+                if file_content:
+                    original = file_content
+                    logger.info("merge.file_content_read", 
+                               file_path=file_path, 
+                               content_length=len(file_content))
+            
+            # For non-existent files on create operations, use empty string
+            if not original and context.get('type') == 'create':
+                original = ""
+                logger.info("merge.create_operation", 
+                           file_path=file_path, 
+                           using_empty_original=True)
+            # For other operations, require content unless allow_partial is True
+            elif not original and not self.allow_partial:
+                return AgentResponse(
+                    success=False,
+                    error=f"Original file not found: {file_path}",
+                    data=context
+                )
+            
+            if not original:
                 logger.warning("merge.missing_original", 
                              file=file_path,
                              proceeding=True)

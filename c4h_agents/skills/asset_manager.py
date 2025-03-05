@@ -176,21 +176,45 @@ class AssetManager(BaseAgent):
 
             # Resolve file path using consistent resolution logic
             resolved_path = self._resolve_file_path(file_path)
+            exists = resolved_path.exists()
+            
             logger.info("asset_manager.file_resolved",
                        original=file_path,
                        resolved=str(resolved_path),
-                       exists=resolved_path.exists())
+                       exists=exists)
 
             # Create a backup if the file exists
-            backup_path = self._create_backup(resolved_path)
-
-            # Prepare merged content - ensure original content is available
-            action_copy = dict(action)
-            if resolved_path.exists() and 'original' not in action_copy:
-                action_copy['original'] = resolved_path.read_text()
-                
+            backup_path = None
+            if exists:
+                backup_path = self._create_backup(resolved_path)
+                # Get original content for the file and add to action context
+                try:
+                    original_content = resolved_path.read_text()
+                    if isinstance(action, dict) and 'original' not in action:
+                        action_copy = dict(action)
+                        action_copy['original'] = original_content
+                    else:
+                        action_copy = action
+                except Exception as e:
+                    logger.error("asset_manager.read_original_failed", 
+                               file=str(resolved_path), 
+                               error=str(e))
+                    action_copy = action
+            else:
+                # For new files, explicitly mark as create operation
+                if isinstance(action, dict) and 'type' not in action:
+                    action_copy = dict(action)
+                    action_copy['type'] = 'create'
+                else:
+                    action_copy = action
+            
+            # Enhance the context with the file path
+            if isinstance(action_copy, dict):
+                action_copy['file_path'] = str(resolved_path)
+            
             # Let merger handle content merging/creation
             merge_result = self.merger.process(action_copy)
+            
             if not merge_result.success:
                 logger.error("asset_manager.merge_failed", error=merge_result.error)
                 return AssetResult(

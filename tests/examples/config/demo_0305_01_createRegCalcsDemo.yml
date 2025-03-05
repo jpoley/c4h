@@ -1,0 +1,88 @@
+# Project settings
+project:
+  path: "./tests/regulatory_calculations/"
+  workspace_root: "workspaces"
+
+# Intent description
+intent:
+  description: |
+    Convert the python calculation modules to equivalent functionalit in DBT
+    Do not lose any functionality, but migrate the code to equvalent or best of breed DBT conterparts
+    Ensure that the code is modular and reusable
+    Ensure that the code is performant
+    Ensure that the code is scalable
+    Ensure that the code is maintainable
+    Ensure that the code is readable
+    Ensure that the code is well structured
+    Ensure that the code is well formatted
+    Ensure that the code is well commented
+    Ensure that the code is well versioned
+
+    The new code should be in a DBT/subfolder of the current project
+
+
+
+
+  calculations_module:
+    file: "regulatory_calculations.py"
+    functions:
+      - name: "calculate_lcr"
+        description: |
+          Calculate Liquidity Coverage Ratio (LCR):
+          - Input: PySpark DataFrame with cash inflows/outflows.
+          - Logic: Sum high-quality liquid assets (HQLA) and net cash outflows over 30 days.
+          - Output: LCR ratio and detailed breakdown as a PySpark DataFrame.
+      - name: "calculate_nsfr"
+        description: "Placeholder function for Net Stable Funding Ratio (NSFR) calculation."
+  main_program:
+    file: "main.py"
+    description: "Load config, initialize PySpark, run calculations in sequence, and save results."
+  config_file:
+    file: "config.yml"
+    structure:
+      database:
+        host: "placeholder_host"
+        port: 5432
+        database_name: "regulatory_db"
+        schema: "regulatory_schema"
+        credentials:
+          username: "placeholder_user"
+          password: "placeholder_password"
+      pyspark:
+        app_name: "RegulatoryCalculations"
+        master_url: "local[*]"
+        memory: "4g"
+      calculations:
+        lcr:
+          stress_period_days: 30
+          hqla_categories: ["cash", "gov_bonds"]
+      output:
+        type: "csv"
+        path: "output/regulatory_results"
+  logging:
+    config:
+      file_handler: "logs/regulatory_calc.log"
+      console_output: true
+      level: "INFO"
+
+# LLM configuration
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-7-sonnet-20250219"
+  agents:
+    discovery:
+      temperature: 0
+      tartxt_config:
+        script_path: "./c4h_agents/skills/tartxt.py"
+        input_paths: ["./regulatory_calculations/"]
+        exclusions: ["**/__pycache__/**"]
+    solution_designer:
+      provider: "anthropic"
+      model: "claude-3-7-sonnet-20250219"
+      temperature: 0
+      extended_thinking:
+        enabled: false
+        budget_tokens: 32000
+    coder:
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-20241022"
