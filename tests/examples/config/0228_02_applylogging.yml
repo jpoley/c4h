@@ -17,6 +17,31 @@ llm_config:
   default_provider: "anthropic"
   default_model: "claude-3-7-sonnet-20250219"
   agents:
+    # Add lineage configuration with both backends enabled
+    lineage:
+      enabled: true
+      namespace: "c4h_agents"
+      event_detail_level: "full"
+      separate_input_output: false
+      
+      # Configure multiple backends
+      backends:
+        # File backend (default)
+        file:
+          enabled: true
+          path: "workspaces/lineage"
+        
+        # Marquez service backend
+        marquez:
+          enabled: true
+          url: "http://localhost:5005"
+          auth:
+            type: "none"
+          transport:
+            timeout: 30
+            retries: 3
+            backoff: true
+            
     discovery:
       temperature: 0
       tartxt_config:
@@ -33,3 +58,24 @@ llm_config:
     coder:
       provider: "anthropic"
       model: "claude-3-5-sonnet-20241022"
+
+# Add runtime lineage configuration for compatibility
+runtime:
+  lineage:
+    enabled: true
+    namespace: "c4h_agents"
+    backends:
+      file:
+        enabled: true
+        path: "workspaces/lineage"
+      marquez_primary:
+        enabled: true
+        url: "http://localhost:5005"
+        auth:
+          type: "none"
+
+# Enhanced logging to see lineage activity
+logging:
+  level: "INFO"
+  format: "structured"
+  agent_level: "DEBUG"  # Set to DEBUG to see lineage tracking logs
