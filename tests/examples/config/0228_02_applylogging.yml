@@ -30,7 +30,6 @@ llm_config:
         file:
           enabled: true
           path: "workspaces/lineage"
-        
         # Marquez service backend
         marquez:
           enabled: true
@@ -68,7 +67,7 @@ runtime:
       file:
         enabled: true
         path: "workspaces/lineage"
-      marquez_primary:
+      marquez:
         enabled: true
         url: "http://localhost:5005"
         auth:
