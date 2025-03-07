@@ -13,7 +13,7 @@ import os
 
 # Try importing OpenLineage, but don't fail if it's not available
 try:
-    from openlineage.client import OpenLineageClient, set_producer
+    from openlineage.client import OpenLineageClient
     from openlineage.client.run import RunEvent, RunState, InputDataset, OutputDataset
     from openlineage.client.facet import ParentRunFacet, DocumentationJobFacet
     OPENLINEAGE_AVAILABLE = True
@@ -53,6 +53,8 @@ class BaseLineage:
         self.agent_name = agent_name
         self.agent_type = agent_name.split('.')[-1] if '.' in agent_name else agent_name
         self.enabled = False
+        self.client = None
+        self.use_marquez = False
         
         # Create a configuration node for hierarchical access
         self.config_node = create_config_node(config or {})
@@ -77,40 +79,102 @@ class BaseLineage:
         self.run_id = self._extract_run_id(self.config_node)
         logger.debug(f"{agent_name}.using_run_id", run_id=self.run_id)
 
-        # Set minimal defaults for lineage configuration
-        self.config = {
-            "enabled": lineage_config.get("enabled", False),
-            "namespace": lineage_config.get("namespace", self.namespace),
-            "backend": lineage_config.get("backend", {
-                "type": "file",
-                "path": "workspaces/lineage"
-            }),
-            "event_detail_level": lineage_config.get("event_detail_level", "full"),
-            "separate_input_output": lineage_config.get("separate_input_output", False)
-        }
-        
-        self.enabled = self.config["enabled"]
+        # Set global config parameters
+        self.enabled = lineage_config.get("enabled", False)
+        self.namespace = lineage_config.get("namespace", self.namespace)
+        self.event_detail_level = lineage_config.get("event_detail_level", "full")
+        self.separate_input_output = lineage_config.get("separate_input_output", False)
+             
         if not self.enabled:
             logger.info(f"{agent_name}.lineage_disabled", reason="not_enabled")
             return
 
-        # Setup storage directory
-        try:
-            base_dir = Path(self.config["backend"]["path"])
-            date_str = datetime.now().strftime('%Y%m%d')
-            self.lineage_dir = base_dir / date_str / self.run_id
-            self.lineage_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Create directories under run_id
-            (self.lineage_dir / "events").mkdir(exist_ok=True)
-            (self.lineage_dir / "errors").mkdir(exist_ok=True)
-            (self.lineage_dir / "inputs").mkdir(exist_ok=True)
-            (self.lineage_dir / "outputs").mkdir(exist_ok=True)
-            
-            logger.info("lineage.storage_initialized", path=str(self.lineage_dir), run_id=self.run_id)
-        except Exception as e:
-            logger.error("lineage.storage_init_failed", error=str(e))
+        # Initialize backends
+        self.backends = {}
+        
+        # Get backend configurations
+        backends_config = lineage_config.get("backends", {})
+        
+        # Handle backward compatibility - if no backends section, assume file backend with original config
+        if not backends_config:
+            file_config = {
+                "enabled": True,
+                "path": lineage_config.get("backend", {}).get("path", "workspaces/lineage")
+            }
+            backends_config = {"file": file_config}
+        
+        # Initialize file backend
+        file_config = backends_config.get("file", {})
+        if file_config.get("enabled", True):
+            try:
+                # Setup file storage
+                base_dir = Path(file_config.get("path", "workspaces/lineage"))
+                date_str = datetime.now().strftime('%Y%m%d')
+                self.lineage_dir = base_dir / date_str / self.run_id
+                self.lineage_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Create subdirectories
+                (self.lineage_dir / "events").mkdir(exist_ok=True)
+                (self.lineage_dir / "errors").mkdir(exist_ok=True)
+                (self.lineage_dir / "inputs").mkdir(exist_ok=True)
+                (self.lineage_dir / "outputs").mkdir(exist_ok=True)
+                
+                self.backends["file"] = {"enabled": True}
+                logger.info("lineage.file_backend_initialized", path=str(self.lineage_dir), run_id=self.run_id)
+            except Exception as e:
+                logger.error("lineage.file_backend_init_failed", error=str(e))
+                self.backends["file"] = {"enabled": False, "error": str(e)}
+        
+        # Initialize Marquez backend
+        # Look for any marquez backend in the config
+        marquez_config = None
+        marquez_key = None
+        for key, config in backends_config.items():
+            if "marquez" in key and config.get("enabled", False):
+                marquez_config = config
+                marquez_key = key
+                break
+                
+        if marquez_config:
+            if OPENLINEAGE_AVAILABLE:
+                try:
+                    # Setup OpenLineage client
+                    url = marquez_config.get("url", "http://localhost:5005")
+                    logger.info(f"lineage.marquez_backend_configuring", url=url)
+                    
+                    # Create the client with just the URL parameter
+                    self.client = OpenLineageClient(url=url)
+                    
+                    # We don't need to set producer on the client, it will be specified per event
+                    # Store producer info for later use in events
+                    self.producer_name = "c4h_agents"
+                    self.producer_version = "0.1.0"
+                    
+                    # Log transport settings that we can't use directly
+                    transport_config = marquez_config.get("transport", {})
+                    if transport_config:
+                        logger.debug("lineage.marquez_transport_settings", 
+                                    settings=transport_config,
+                                    note="Transport settings logged but not applied - OpenLineageClient doesn't support these constructor arguments")
+                    
+                    self.use_marquez = True
+                    self.backends["marquez"] = {"enabled": True, "url": url}
+                    logger.info("lineage.marquez_backend_initialized", url=url, run_id=self.run_id)
+                except Exception as e:
+                    logger.error("lineage.marquez_backend_init_failed", error=str(e))
+                    self.backends["marquez"] = {"enabled": False, "error": str(e)}
+            else:
+                logger.warning("lineage.marquez_backend_unavailable", reason="openlineage_not_installed")
+                self.backends["marquez"] = {"enabled": False, "error": "OpenLineage not available"}
+        
+        # Check if any backends are enabled
+        if not any(backend.get("enabled", False) for backend in self.backends.values()):
+            logger.warning("lineage.all_backends_disabled")
             self.enabled = False
+        else:
+            # Log active backends
+            active = [name for name, config in self.backends.items() if config.get("enabled")]
+            logger.info("lineage.active_backends", backends=active, count=len(active))
 
     def _extract_run_id(self, config_node) -> str:
         """
@@ -172,6 +236,18 @@ class BaseLineage:
                             "total_tokens": getattr(usage, 'total_tokens', 0)
                         }
                     return response_data
+                # Handle delta format (used in streaming)
+                elif hasattr(value.choices[0], 'delta') and hasattr(value.choices[0].delta, 'content'):
+                    content = value.choices[0].delta.content
+                    return {"content": content}
+            except (AttributeError, IndexError):
+                pass
+        
+        # Handle StreamedResponse (from BaseLLM._get_completion_with_continuation)
+        if "StreamedResponse" in str(type(value)):
+            try:
+                if hasattr(value, 'choices') and value.choices:
+                    return {"content": value.choices[0].message.content}
             except (AttributeError, IndexError):
                 pass
         
@@ -183,14 +259,6 @@ class BaseLineage:
                 "total_tokens": getattr(value, 'total_tokens', 0)
             }
         
-        # Handle StreamedResponse (from BaseLLM._get_completion_with_continuation)
-        if "StreamedResponse" in str(type(value)):
-            try:
-                if hasattr(value, 'choices') and value.choices:
-                    return {"content": value.choices[0].message.content}
-            except (AttributeError, IndexError):
-                pass
-                
         # Handle custom objects with to_dict method
         if hasattr(value, 'to_dict'):
             return value.to_dict()
@@ -235,11 +303,9 @@ class BaseLineage:
         
         return event_id, parent_id, step, path
 
-    # Path: c4h_agents/agents/base_lineage.py
-
     def _write_file_event(self, event: LineageEvent) -> None:
         """Write event to file system with minimal processing"""
-        if not self.enabled or not self.lineage_dir:
+        if not self.enabled or not self.lineage_dir or not self.backends.get("file", {}).get("enabled", False):
             return
             
         try:
@@ -253,8 +319,7 @@ class BaseLineage:
                 "timestamp": event.timestamp.isoformat(),
                 "agent": {
                     "name": event.agent_name,
-                    "type": event.agent_type,
-                    "execution_id": event.agent_execution_id if hasattr(event, "agent_execution_id") else None
+                    "type": event.agent_type
                 },
                 "workflow": {
                     "run_id": event.run_id,
@@ -279,89 +344,47 @@ class BaseLineage:
             # Rename to final filename (atomic operation)
             temp_file.rename(event_file)
             
-            logger.info("lineage.event_saved", 
-                    path=str(event_file), 
-                    agent=event.agent_name, 
+            logger.info("lineage.event_saved",
+                    path=str(event_file),
+                    agent=event.agent_name,
                     run_id=event.run_id,
                     event_size=event_file.stat().st_size,
                     event_id=event.event_id)
                 
         except Exception as e:
-            logger.error("lineage.write_failed", 
-                        error=str(e), 
-                        lineage_dir=str(self.lineage_dir), 
-                        agent=event.agent_name,
-                        event_id=event.event_id)
+            logger.error("lineage.write_failed",
+                         error=str(e),
+                         lineage_dir=str(self.lineage_dir),
+                         agent=event.agent_name,
+                         event_id=event.event_id)
     
-    def track_llm_interaction(self,
-                            context: Dict[str, Any],
-                            messages: LLMMessages,
-                            response: Any,
-                            metrics: Optional[Dict] = None) -> None:
-        """Track complete LLM interaction"""
-        if not self.enabled:
-            logger.debug("lineage.tracking_skipped", enabled=False)
-            return
-            
-        try:
-            # Extract event_id, parent_id, and other lineage metadata
-            event_id = context.get("agent_execution_id", str(uuid.uuid4()))
-            parent_id = context.get("parent_id")
-            agent_type = context.get("agent_type", self.agent_type)
-            step = context.get("step")
-            
-            # Extract execution path
-            execution_path = []
-            if "lineage_metadata" in context and "execution_path" in context["lineage_metadata"]:
-                execution_path = context["lineage_metadata"]["execution_path"]
-            
-            # Create the lineage event
-            event = LineageEvent(
-                event_id=event_id,
-                agent_name=self.agent_name,
-                agent_type=agent_type,
-                run_id=self.run_id,
-                parent_id=parent_id,
-                input_context=context,
-                messages=messages,
-                raw_output=response,
-                metrics=metrics,
-                step=step,
-                execution_path=execution_path
-            )
-            
-            # Track in appropriate backend
-            self._write_file_event(event)
-            
-            logger.info("lineage.event_saved", 
-                    agent=self.agent_name, 
-                    event_id=event_id,
-                    parent_id=parent_id,
-                    path_length=len(execution_path) if execution_path else 0)
-                    
-        except Exception as e:
-            logger.error("lineage.track_failed", error=str(e), agent=self.agent_name)
-            if not self.config.get("error_handling", {}).get("ignore_failures", True):
-                raise
-
     def _emit_marquez_event(self, event: LineageEvent) -> None:
         """Emit event to Marquez"""
-        if not OPENLINEAGE_AVAILABLE or not self.client:
-            logger.warning("lineage.marquez_not_available")
+        if not OPENLINEAGE_AVAILABLE or not self.client or not self.use_marquez or not self.backends.get("marquez", {}).get("enabled", False):
             return
             
         try:
+            logger.debug("lineage.marquez_event_preparing", 
+                       event_id=event.event_id, 
+                       agent=event.agent_name)
+                       
+            # Create the OpenLineage run event with producer explicitly set
+            # Prepare facets dictionary with proper handling of None values
+            facets = {}
+            if event.parent_id:
+                facets["parent"] = ParentRunFacet(run={
+                    "runId": event.parent_id
+                })
+            facets["documentation"] = DocumentationJobFacet(description=f"Agent: {event.agent_name}")
+            
+            # Create the event with producer explicitly set
             ol_event = RunEvent(
                 eventType=RunState.COMPLETE,
                 eventTime=event.timestamp.isoformat(),
+                producer="c4h_agents",  # Explicitly set producer in the event
                 run={
                     "runId": event.event_id,
-                    "facets": {
-                        "parent": ParentRunFacet(run={
-                            "runId": event.parent_id
-                        }) if event.parent_id else None,
-                        "documentation": DocumentationJobFacet(description=f"Agent: {event.agent_name}")
-                    }
+                    "facets": facets
                 },
                 job={
                     "namespace": self.namespace,
@@ -381,6 +404,98 @@ class BaseLineage:
                     }
                 )]
             )
+            
+            logger.debug("lineage.marquez_event_sending", 
+                       event_id=event.event_id,
+                       agent=event.agent_name)
+                       
+            # Use the emit method on the client instance
             self.client.emit(ol_event)
-            logger.info("lineage.marquez_event_emitted", event_id=event.event_id)
-        except Exception as e:logger.error("lineage.marquez_event_failed", error=str(e), event_id=event.event_id)
+            
+            logger.info("lineage.marquez_event_emitted", 
+                      event_id=event.event_id,
+                      agent=event.agent_name,
+                      url=self.backends["marquez"].get("url", "unknown"))
+                      
+        except Exception as e:
+            logger.error("lineage.marquez_event_failed", 
+                       error=str(e),
+                       event_id=event.event_id,
+                       agent=event.agent_name)
+    
+    def track_llm_interaction(self,
+                              context: Dict[str, Any],
+                              messages: LLMMessages,
+                              response: Any,
+                              metrics: Optional[Dict] = None) -> None:
+        """Track complete LLM interaction"""
+        if not self.enabled:
+            logger.debug("lineage.tracking_skipped", enabled=False)
+            return
+            
+        try:
+            # Extract lineage metadata
+            event_id, parent_id, step, execution_path = self._extract_lineage_metadata(context)
+            
+            # Create the lineage event
+            event = LineageEvent(
+                event_id=event_id,
+                agent_name=self.agent_name,
+                agent_type=self.agent_type,
+                run_id=self.run_id,
+                parent_id=parent_id,
+                input_context=context,
+                messages=messages,
+                raw_output=response,
+                metrics=metrics,
+                step=step,
+                execution_path=execution_path
+            )
+            
+            # Track to file backend
+            if self.backends.get("file", {}).get("enabled", False):
+                try:
+                    self._write_file_event(event)
+                    file_success = True
+                except Exception as e:
+                    logger.error("lineage.file_backend_failed", error=str(e))
+                    file_success = False
+            else:
+                file_success = False
+            
+            # Track to Marquez backend
+            if self.use_marquez and self.backends.get("marquez", {}).get("enabled", False):
+                try:
+                    self._emit_marquez_event(event)
+                    marquez_success = True
+                except Exception as e:
+                    logger.error("lineage.marquez_backend_failed", error=str(e))
+                    marquez_success = False
+            else:
+                marquez_success = False
+            
+            # Count successful backends
+            backend_count = 0
+            success_count = 0
+            
+            if "file" in self.backends and self.backends["file"].get("enabled", False):
+                backend_count += 1
+                if file_success:
+                    success_count += 1
+                    
+            if "marquez" in self.backends and self.backends["marquez"].get("enabled", False):
+                backend_count += 1
+                if marquez_success:
+                    success_count += 1
+            
+            # Log overall tracking status
+            logger.info("lineage.event_saved",
+                    agent=self.agent_name,
+                    event_id=event_id,
+                    parent_id=parent_id,
+                    backends_succeeded=success_count,
+                    backends_total=backend_count,
+                    path_length=len(execution_path) if execution_path else 0)
+                        
+        except Exception as e:
+            logger.error("lineage.track_failed", error=str(e), agent=self.agent_name)
