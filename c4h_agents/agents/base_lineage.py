@@ -13,7 +13,7 @@ import os
 
 # Try importing OpenLineage, but don't fail if it's not available
 try:
-    from openlineage.client import OpenLineageClient, set_producer
+    from openlineage.client import OpenLineageClient
     from openlineage.client.run import RunEvent, RunState, InputDataset, OutputDataset
     from openlineage.client.facet import ParentRunFacet, DocumentationJobFacet
     OPENLINEAGE_AVAILABLE = True
@@ -142,8 +142,13 @@ class BaseLineage:
                     url = marquez_config.get("url", "http://localhost:5005")
                     logger.info(f"lineage.marquez_backend_configuring", url=url)
                     
-                    # Create the client - only pass the URL as it seems the client doesn't support other constructor args
-                    self.client = OpenLineageClient(url)
+                    # Create the client with just the URL parameter
+                    self.client = OpenLineageClient(url=url)
+                    
+                    # We don't need to set producer on the client, it will be specified per event
+                    # Store producer info for later use in events
+                    self.producer_name = "c4h_agents"
+                    self.producer_version = "0.1.0"
                     
                     # Log transport settings that we can't use directly
                     transport_config = marquez_config.get("transport", {})
@@ -151,9 +156,6 @@ class BaseLineage:
                         logger.debug("lineage.marquez_transport_settings", 
                                     settings=transport_config,
                                     note="Transport settings logged but not applied - OpenLineageClient doesn't support these constructor arguments")
-                    
-                    # Set producer info
-                    set_producer("c4h_agents", "0.1.0")
                     
                     self.use_marquez = True
                     self.backends["marquez"] = {"enabled": True, "url": url}
@@ -366,17 +368,23 @@ class BaseLineage:
                        event_id=event.event_id, 
                        agent=event.agent_name)
                        
+            # Create the OpenLineage run event with producer explicitly set
+            # Prepare facets dictionary with proper handling of None values
+            facets = {}
+            if event.parent_id:
+                facets["parent"] = ParentRunFacet(run={
+                    "runId": event.parent_id
+                })
+            facets["documentation"] = DocumentationJobFacet(description=f"Agent: {event.agent_name}")
+            
+            # Create the event with producer explicitly set
             ol_event = RunEvent(
                 eventType=RunState.COMPLETE,
                 eventTime=event.timestamp.isoformat(),
+                producer="c4h_agents",  # Explicitly set producer in the event
                 run={
                     "runId": event.event_id,
-                    "facets": {
-                        "parent": ParentRunFacet(run={
-                            "runId": event.parent_id
-                        }) if event.parent_id else None,
-                        "documentation": DocumentationJobFacet(description=f"Agent: {event.agent_name}")
-                    }
+                    "facets": facets
                 },
                 job={
                     "namespace": self.namespace,
@@ -401,6 +409,7 @@ class BaseLineage:
                        event_id=event.event_id,
                        agent=event.agent_name)
                        
+            # Use the emit method on the client instance
             self.client.emit(ol_event)
             
             logger.info("lineage.marquez_event_emitted", 
