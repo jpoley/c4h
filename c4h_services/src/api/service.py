@@ -59,85 +59,66 @@ def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
             if request.app_config:
                 config = deep_merge(config, request.app_config)
             
-            # Generate workflow ID
-            workflow_id = f"wf_{uuid.uuid4()}"
+            # Initialize workflow with consistent defaults
+            prepared_config, context = app.state.orchestrator.initialize_workflow(
+                project_path=request.project_path,
+                intent_desc=request.intent,
+                config=config
+            )
             
-            # Add workflow ID to config for lineage tracking
-            if 'system' not in config:
-                config['system'] = {}
-            config['system']['runid'] = workflow_id
-            config['workflow_run_id'] = workflow_id
-            
-            # Set project path in config
-            if 'project' not in config:
-                config['project'] = {}
-            config['project']['path'] = request.project_path
-            
+            workflow_id = context["workflow_run_id"]
+                 
             # Store intent in config
             config['intent'] = request.intent
-            
-            # Ensure orchestration is enabled in config
-            if 'orchestration' not in config:
-                config['orchestration'] = {'enabled': True}
-            else:
-                config['orchestration']['enabled'] = True
-                
+                 
             # Log workflow start
             logger.info("workflow.starting", 
                         workflow_id=workflow_id, 
                         project_path=request.project_path,
-                        config_keys=list(config.keys()))
-            
-            # Prepare context
-            context = {
-                "project_path": request.project_path,
-                "intent": request.intent,
-                "workflow_run_id": workflow_id,
-                "config": config
-            }
-            
+                        config_keys=list(prepared_config.keys()))
+             
             # Execute workflow
             try:
                 # Get entry team from config or use default
-                entry_team = config.get("orchestration", {}).get("entry_team", "discovery")
-                
+                entry_team = prepared_config.get("orchestration", {}).get("entry_team", "discovery")
+                 
                 result = app.state.orchestrator.execute_workflow(
                     entry_team=entry_team,
                     context=context
                 )
-                
+                 
                 # Store result
                 workflow_storage[workflow_id] = {
                     "status": result.get("status", "error"),
                     "team_results": result.get("team_results", {}),
                     "changes": result.get("data", {}).get("changes", []),
-                    "storage_path": os.path.join("workspaces", "lineage", workflow_id) if config.get("lineage", {}).get("enabled", False) else None
+                    "storage_path": os.path.join("workspaces", "lineage", workflow_id) if prepared_config.get("lineage", {}).get("enabled", False) else None
                 }
-                
+                 
                 return WorkflowResponse(
                     workflow_id=workflow_id,
                     status=result.get("status", "error"),
                     storage_path=workflow_storage[workflow_id].get("storage_path"),
                     error=result.get("error") if result.get("status") == "error" else None
                 )
-                
+                 
             except Exception as e:
                 logger.error("workflow.execution_failed", 
                            workflow_id=workflow_id, 
                            error=str(e))
-                
+                 
                 workflow_storage[workflow_id] = {
                     "status": "error",
                     "error": str(e),
                     "storage_path": None
                 }
-                
+                 
                 return WorkflowResponse(
                     workflow_id=workflow_id,
                     status="error",
                     error=str(e)
                 )
-                
+                 
         except Exception as e:
             logger.error("workflow.request_failed", error=str(e))
             raise HTTPException(status_code=500, detail=str(e))
