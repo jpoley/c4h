@@ -3,13 +3,13 @@ Orchestrator for managing team-based workflow execution.
 Path: c4h_services/src/orchestration/orchestrator.py
 """
 
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set, Union, Tuple
 from c4h_services.src.utils.logging import get_logger
 from pathlib import Path
 from datetime import datetime, timezone
 from copy import deepcopy
-import yaml
 import uuid
+import yaml
 
 from c4h_agents.config import create_config_node, deep_merge
 from c4h_services.src.intent.impl.prefect.models import AgentTaskConfig
@@ -146,7 +146,7 @@ class Orchestrator:
         logger.info("orchestrator.default_teams_loaded", 
                   teams=["discovery", "solution", "coder"])
     
-    # Path: c4h_services/src/orchestration/orchestrator.py
+
     def execute_workflow(
         self, 
         entry_team: str = "discovery",
@@ -164,6 +164,21 @@ class Orchestrator:
         Returns:
             Final workflow result
         """
+        # Use the configuration from the context if provided
+        if context and "config" in context:
+            # Update the orchestrator's config with the context's config
+            updated_config = context["config"]
+            if updated_config != self.config:
+                # Config has changed, reload teams with the new config
+                self.config = updated_config
+                self.config_node = create_config_node(updated_config)
+                # Reload teams with the new configuration
+                self.teams = {}
+                self._load_teams()
+                logger.info("orchestrator.teams_reloaded_with_updated_config", 
+                        teams_count=len(self.teams),
+                        teams=list(self.teams.keys()))
+
         if entry_team not in self.teams:
             raise ValueError(f"Entry team {entry_team} not found")
             
@@ -271,3 +286,122 @@ class Orchestrator:
                 execution_path=execution_path)
                 
         return final_result
+
+    def initialize_workflow(
+        self,
+        project_path: Union[str, Path],
+        intent_desc: Dict[str, Any],
+        config: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """
+        Initialize workflow configuration with consistent defaults and parameter handling.
+        
+        Args:
+            project_path: Path to the project
+            intent_desc: Description of the intent
+            config: Base configuration
+            
+        Returns:
+            Tuple of (prepared_config, context_dict)
+        """
+        try:
+            # Ensure config is a dictionary
+            prepared_config = config.copy() if config else {}
+
+            # Normalize project path
+            if not project_path:
+                project_path = prepared_config.get('project', {}).get('path')
+                if not project_path:
+                    raise ValueError("No project path specified in arguments or config")
+
+            # Convert Path objects to string for consistency
+            if isinstance(project_path, Path):
+                project_path = str(project_path)
+                
+            # Ensure project config exists
+            if 'project' not in prepared_config:
+                prepared_config['project'] = {}
+            prepared_config['project']['path'] = project_path
+
+            # Generate workflow ID
+            workflow_id = f"wf_{uuid.uuid4()}"
+
+            # Configure system namespace
+            if 'system' not in prepared_config:
+                prepared_config['system'] = {}
+            prepared_config['system']['runid'] = workflow_id
+
+            # Add workflow ID at top level for convenience
+            prepared_config['workflow_run_id'] = workflow_id
+
+            # Add timestamp information
+            timestamp = datetime.now(timezone.utc).isoformat()
+            if 'runtime' not in prepared_config:
+                prepared_config['runtime'] = {}
+            if 'workflow' not in prepared_config['runtime']:
+                prepared_config['runtime']['workflow'] = {}
+            prepared_config['runtime']['workflow']['start_time'] = timestamp
+
+            # Ensure orchestration is enabled
+            if 'orchestration' not in prepared_config:
+                prepared_config['orchestration'] = {'enabled': True}
+            else:
+                prepared_config['orchestration']['enabled'] = True
+
+            # Add default configs for crucial components
+            
+            # 1. Ensure tartxt_config defaults
+            if 'llm_config' not in prepared_config:
+                prepared_config['llm_config'] = {}
+            if 'agents' not in prepared_config['llm_config']:
+                prepared_config['llm_config']['agents'] = {}
+            if 'discovery' not in prepared_config['llm_config']['agents']:
+                prepared_config['llm_config']['agents']['discovery'] = {}
+                
+            # Add default tartxt_config if not present
+            discovery_config = prepared_config['llm_config']['agents']['discovery']
+            if 'tartxt_config' not in discovery_config:
+                discovery_config['tartxt_config'] = {}
+                
+            tartxt_config = discovery_config['tartxt_config']
+
+            # Ensure script_path is set (handle both possible key names)
+            if 'script_path' not in tartxt_config and 'script_base_path' not in tartxt_config:
+                # Try to locate the script in the package
+                import c4h_agents
+                agent_path = Path(c4h_agents.__file__).parent
+                script_path = agent_path / "skills" / "tartxt.py"
+                if script_path.exists():
+                    tartxt_config['script_path'] = str(script_path)
+                else:
+                    # Fallback to a relative path if the package path is not found
+                    tartxt_config['script_path'] = "c4h_agents/skills/tartxt.py"
+            elif 'script_base_path' in tartxt_config and 'script_path' not in tartxt_config:
+                # Convert script_base_path to script_path
+                script_base = tartxt_config['script_base_path']
+                tartxt_config['script_path'] = f"{script_base}/tartxt.py"
+
+            # Ensure input_paths is set
+            if 'input_paths' not in tartxt_config:
+                tartxt_config['input_paths'] = ["./"]
+                
+            # Prepare consistent context dictionary
+            context = {
+                "project_path": project_path,
+                "intent": intent_desc,
+                "workflow_run_id": workflow_id,
+                "system": {"runid": workflow_id},
+                "timestamp": timestamp,
+                "config": prepared_config
+            }
+            
+            logger.info("workflow.initialized", 
+                       workflow_id=workflow_id,
+                       project_path=project_path,
+                       tartxt_config_keys=list(tartxt_config.keys()))
+                       
+            return prepared_config, context
+            
+        except Exception as e:
+            logger.error("workflow.initialization_failed", error=str(e))
+            raise

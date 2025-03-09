@@ -8,6 +8,8 @@ from pathlib import Path
 import sys
 import os
 import uuid  # Add missing import
+import requests
+import time
 
 # Add the project root to the Python path
 # We need to go up enough levels to include both c4h_services and c4h_agents
@@ -113,67 +115,34 @@ def load_configs(app_config_path: Optional[str] = None, system_config_paths: Opt
 def run_workflow(project_path: Optional[str], intent_desc: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
     """Run a team-based workflow with the provided configuration"""
     try:
-        # Get project path from config if not provided as argument
-        if not project_path:
-            project_path = config.get('project', {}).get('path')
-            if project_path:
-                logger.info("workflow.using_project_from_config", project_path=project_path)
-            else:
-                raise ValueError("No project path specified in arguments or config")
-                
         logger.info("workflow.starting",
                    project_path=project_path,
                    intent_keys=list(intent_desc.keys()) if intent_desc else {},
                    config_keys=list(config.keys()) if config else {})
                 
-        # Process project path
-        if 'project' not in config:
-            config['project'] = {}
-        config['project']['path'] = project_path
-        
-        # Generate workflow ID
-        workflow_id = f"wf_{uuid.uuid4()}"
-        
-        # Add workflow ID to config for lineage tracking
-        if 'system' not in config:
-            config['system'] = {}
-        config['system']['runid'] = workflow_id
-        config['workflow_run_id'] = workflow_id
-        
-        # Add timestamp information
-        timestamp = datetime.now(timezone.utc).isoformat()
-        if 'runtime' not in config:
-            config['runtime'] = {}
-        if 'workflow' not in config['runtime']:
-            config['runtime']['workflow'] = {}
-        config['runtime']['workflow']['start_time'] = timestamp
-                
         # Create orchestrator and execute workflow
         orchestrator = Orchestrator(config)
         
-        # Prepare context
-        context = {
-            "project_path": project_path,
-            "intent": intent_desc,
-            "workflow_run_id": workflow_id,
-            "system": {"runid": workflow_id},
-            "timestamp": timestamp,
-            "config": config
-        }
-        
+        # Initialize workflow configuration and context
+        prepared_config, context = orchestrator.initialize_workflow(
+            project_path=project_path,
+            intent_desc=intent_desc,
+            config=config
+        )
+         
         # Get entry team from config or use default
-        entry_team = config.get("orchestration", {}).get("entry_team", "discovery")
-        
+        entry_team = prepared_config.get("orchestration", {}).get("entry_team", "discovery")
+         
         # Execute workflow
         result = orchestrator.execute_workflow(
             entry_team=entry_team,
             context=context
         )
-        
+         
         logger.info("workflow.completed",
                    workflow_id=result.get("workflow_run_id", "unknown"),
                    status=result.get("status", "unknown"))
-                
+                 
         return result
             
     except Exception as e:
@@ -186,11 +155,119 @@ def run_workflow(project_path: Optional[str], intent_desc: Dict[str, Any], confi
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
+def send_workflow_request(host: str, port: int, project_path: str, intent_desc: Dict[str, Any],
+                          app_config: Optional[Dict[str, Any]] = None,
+                          system_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Send workflow request to server and return the response.
+    
+    Args:
+        host: Server hostname or IP address
+        port: Server port number
+        project_path: Path to the project
+        intent_desc: Intent description dictionary
+        app_config: Application configuration (optional)
+        system_config: System configuration (optional)
+        
+    Returns:
+        Response data from the server
+    """
+    url = f"http://{host}:{port}/api/v1/workflow"
+    
+    # Prepare request data
+    request_data = {
+        "project_path": project_path,
+        "intent": intent_desc,
+        "app_config": app_config,
+        "system_config": system_config
+    }
+    
+    # Log request details
+    logger.info("client.sending_request",
+               url=url,
+               project_path=project_path,
+               has_intent=bool(intent_desc),
+               has_app_config=bool(app_config),
+               has_system_config=bool(system_config))
+    
+    # Send request
+    try:
+        response = requests.post(url, json=request_data)
+        response.raise_for_status()  # Raise exception for HTTP errors
+        result = response.json()
+        
+        logger.info("client.request_success",
+                  workflow_id=result.get("workflow_id"),
+                  status=result.get("status"))
+                  
+        return result
+    except requests.RequestException as e:
+        logger.error("client.request_failed", error=str(e))
+        return {
+            "status": "error",
+            "error": f"Request failed: {str(e)}",
+            "workflow_id": None
+        }
+
+def get_workflow_status(host: str, port: int, workflow_id: str) -> Dict[str, Any]:
+    """
+    Get status of a workflow from the server.
+    
+    Args:
+        host: Server hostname or IP address
+        port: Server port number
+        workflow_id: ID of the workflow to check
+        
+    Returns:
+        Status data from the server
+    """
+    url = f"http://{host}:{port}/api/v1/workflow/{workflow_id}"
+    
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        result = response.json()
+        
+        logger.debug("client.status_check",
+                   workflow_id=workflow_id,
+                   status=result.get("status"))
+                   
+        return result
+    except requests.RequestException as e:
+        logger.error("client.status_check_failed",
+                   workflow_id=workflow_id,
+                   error=str(e))
+        return {
+            "status": "error",
+            "error": f"Status check failed: {str(e)}"
+        }
+
+def poll_workflow_status(host: str, port: int, workflow_id: str, poll_interval: int = 5, max_polls: int = 60) -> Dict[str, Any]:
+    """
+    Poll workflow status until completion or timeout.
+    
+    Args:
+        host: Server hostname or IP address
+        port: Server port number
+        workflow_id: ID of the workflow to check
+        poll_interval: Seconds between status checks
+        max_polls: Maximum number of polls before timeout
+        
+    Returns:
+        Final status from the server
+    """
+    for polls in range(max_polls):
+        result = get_workflow_status(host, port, workflow_id)
+        if result.get("status") in ["success", "error", "complete", "failed"]:
+            return result
+        time.sleep(poll_interval)
+    return {"status": "timeout", "error": f"Polling timed out after {max_polls} attempts", "workflow_id": workflow_id}
+
 def main():
     parser = argparse.ArgumentParser(description="Streamlined team-based workflow runner and API service")
-    parser.add_argument("mode", type=str, nargs="?", choices=["workflow", "service"], 
-                       default="service", help="Run mode (workflow or service)")
-    parser.add_argument("-P", "--port", type=int, default=8000, help="Port number for API service mode")
+    parser.add_argument("mode", type=str, nargs="?", choices=["workflow", "service", "client"],
+                        default="service", help="Run mode (workflow, service, or client)")
+    parser.add_argument("-P", "--port", type=int, default=8000, help="Port number for API service mode or client communication")
     
     # Config parameters
     parser.add_argument("--config", help="Path to application config file")
@@ -199,6 +276,12 @@ def main():
     # Workflow parameters
     parser.add_argument("--project-path", help="Path to the project (optional if defined in config)")
     parser.add_argument("--intent-file", help="Path to intent JSON file (optional if intent defined in config)")
+    
+    # Client parameters
+    parser.add_argument("--host", default="localhost", help="Host for client mode")
+    parser.add_argument("--poll", action="store_true", help="Poll for workflow completion in client mode")
+    parser.add_argument("--poll-interval", type=int, default=5, help="Seconds between status checks in client mode")
+    parser.add_argument("--max-polls", type=int, default=60, help="Maximum number of status checks in client mode")
     
     parser.add_argument(
         "--log",
@@ -218,6 +301,64 @@ def main():
         print(f"Service mode enabled, running on port {args.port}")
         uvicorn.run(app, host="0.0.0.0", port=args.port)
         return
+    
+    # Client mode handling
+    elif args.mode == "client":
+        # Load and merge configurations
+        config = load_configs(args.config, args.system_configs)
+        
+        # Check if project path is available
+        if not args.project_path and not config.get('project', {}).get('path'):
+            parser.error("--project-path is required when not defined in config")
+            
+        # Use project path from args or config
+        project_path = args.project_path or config.get('project', {}).get('path')
+        
+        # Get intent from file or config
+        intent_desc = {}
+        
+        if args.intent_file:
+            try:
+                with open(args.intent_file) as f:
+                    if args.intent_file.endswith('.json'):
+                        intent_desc = json.load(f)
+                    else:
+                        intent_desc = yaml.safe_load(f)
+            except Exception as e:
+                parser.error(f"Failed to load intent file: {str(e)}")
+        elif 'intent' in config:
+            intent_desc = config.get('intent', {})
+            logger.info("client.using_intent_from_config",
+                        intent_keys=list(intent_desc.keys()) if intent_desc else {})
+        else:
+            parser.error("--intent-file is required when intent is not defined in config")
+            
+        # Send workflow request to server
+        result = send_workflow_request(
+            host=args.host,
+            port=args.port,
+            project_path=project_path,
+            intent_desc=intent_desc,
+            app_config=config
+        )
+        
+        # Check result and display
+        if result.get("status") == "error":
+            print(f"Error: {result.get('error')}")
+            sys.exit(1)
+            
+        workflow_id = result.get("workflow_id")
+        print(f"Workflow submitted successfully. Workflow ID: {workflow_id}")
+        print(f"Initial status: {result.get('status')}")
+        
+        # Poll for completion if requested
+        if args.poll and workflow_id:
+            print(f"Polling for completion every {args.poll_interval} seconds (max {args.max_polls} polls)...")
+            status = poll_workflow_status(args.host, args.port, workflow_id, args.poll_interval, args.max_polls)
+            print(f"Final status: {status.get('status', 'unknown')}")
+            if status.get("status") != "success":
+                sys.exit(1)
+        sys.exit(0)
 
     # Load and merge configurations first to potentially get project path and intent
     config = load_configs(args.config, args.system_configs)
@@ -240,7 +381,7 @@ def main():
             parser.error(f"Failed to load intent file: {str(e)}")
     elif 'intent' in config:
         intent_desc = config.get('intent', {})
-        logger.info("workflow.using_intent_from_config", 
+        logger.info("workflow.using_intent_from_config",
                     intent_keys=list(intent_desc.keys()) if intent_desc else {})
     else:
         parser.error("--intent-file is required when intent is not defined in config")
