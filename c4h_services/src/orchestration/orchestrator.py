@@ -146,7 +146,7 @@ class Orchestrator:
         logger.info("orchestrator.default_teams_loaded", 
                   teams=["discovery", "solution", "coder"])
     
-    # Path: c4h_services/src/orchestration/orchestrator.py
+
     def execute_workflow(
         self, 
         entry_team: str = "discovery",
@@ -164,6 +164,21 @@ class Orchestrator:
         Returns:
             Final workflow result
         """
+        # Use the configuration from the context if provided
+        if context and "config" in context:
+            # Update the orchestrator's config with the context's config
+            updated_config = context["config"]
+            if updated_config != self.config:
+                # Config has changed, reload teams with the new config
+                self.config = updated_config
+                self.config_node = create_config_node(updated_config)
+                # Reload teams with the new configuration
+                self.teams = {}
+                self._load_teams()
+                logger.info("orchestrator.teams_reloaded_with_updated_config", 
+                        teams_count=len(self.teams),
+                        teams=list(self.teams.keys()))
+
         if entry_team not in self.teams:
             raise ValueError(f"Entry team {entry_team} not found")
             

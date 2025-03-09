@@ -67,26 +67,29 @@ def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
             )
             
             workflow_id = context["workflow_run_id"]
-                 
+                
             # Store intent in config
-            config['intent'] = request.intent
-                 
+            prepared_config['intent'] = request.intent
+            
             # Log workflow start
             logger.info("workflow.starting", 
                         workflow_id=workflow_id, 
                         project_path=request.project_path,
                         config_keys=list(prepared_config.keys()))
-             
-            # Execute workflow
+            
+            # Execute workflow - pass the fully prepared config in the context
+            # This is critical to ensure the orchestrator uses the current config
+            context["config"] = prepared_config
+            
             try:
                 # Get entry team from config or use default
                 entry_team = prepared_config.get("orchestration", {}).get("entry_team", "discovery")
-                 
+                
                 result = app.state.orchestrator.execute_workflow(
                     entry_team=entry_team,
                     context=context
                 )
-                 
+                
                 # Store result
                 workflow_storage[workflow_id] = {
                     "status": result.get("status", "error"),
@@ -94,34 +97,35 @@ def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
                     "changes": result.get("data", {}).get("changes", []),
                     "storage_path": os.path.join("workspaces", "lineage", workflow_id) if prepared_config.get("lineage", {}).get("enabled", False) else None
                 }
-                 
+                
                 return WorkflowResponse(
                     workflow_id=workflow_id,
                     status=result.get("status", "error"),
                     storage_path=workflow_storage[workflow_id].get("storage_path"),
                     error=result.get("error") if result.get("status") == "error" else None
                 )
-                 
+                
             except Exception as e:
                 logger.error("workflow.execution_failed", 
-                           workflow_id=workflow_id, 
-                           error=str(e))
-                 
+                        workflow_id=workflow_id, 
+                        error=str(e))
+                
                 workflow_storage[workflow_id] = {
                     "status": "error",
                     "error": str(e),
                     "storage_path": None
                 }
-                 
+                
                 return WorkflowResponse(
                     workflow_id=workflow_id,
                     status="error",
                     error=str(e)
                 )
-                 
+                
         except Exception as e:
             logger.error("workflow.request_failed", error=str(e))
             raise HTTPException(status_code=500, detail=str(e))
+
 
     @app.get("/api/v1/workflow/{workflow_id}", response_model=WorkflowResponse)
     async def get_workflow(workflow_id: str):
