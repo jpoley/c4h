@@ -16,11 +16,14 @@ logger = get_logger()
 
 class BaseLLM:
     """LLM interaction layer"""
-    
+    _continuation_handler = None
     def __init__(self):
         """Initialize LLM support"""
-        # Continuation handler will be initialized in first call
-        self._continuation_handler = None
+        self.provider = None
+        self.model = None
+        self.config_node = None
+        self.metrics = {}
+        self.log_level = LogDetail.BASIC
 
     def _get_completion_with_continuation(
             self, 
@@ -29,23 +32,22 @@ class BaseLLM:
         ) -> Tuple[str, Any]:
         """
         Get completion with automatic continuation handling.
-        Delegates to the ContinuationHandler class for implementation.
-        
-        Args:
-            messages: List of message dictionaries with role and content
-            max_attempts: Maximum number of continuation attempts
-            
-        Returns:
-            Tuple of (accumulated_content, final_response)
         """
-        # Initialize continuation handler on first use
-        if self._continuation_handler is None:
-            self._continuation_handler = ContinuationHandler(self)
-            
-        # Delegate to the handler
-        return self._continuation_handler.get_completion_with_continuation(
-            messages, max_attempts)
-
+        try:
+            # Initialize continuation handler on first use
+            if not hasattr(self, '_continuation_handler') or self._continuation_handler is None:
+                self._continuation_handler = ContinuationHandler(self)
+            # Use the handler
+            return self._continuation_handler.get_completion_with_continuation(messages, max_attempts)
+        except AttributeError as e:
+            logger.error(f"continuation_handler_init_failed: {str(e)}")
+            # Fall back to direct LLM call without continuation handling
+            response = completion(
+                model=self.model_str,
+                messages=messages
+            )
+            return response.choices[0].message.content, response
+        
     def _process_response(self, content: str, raw_response: Any) -> Dict[str, Any]:
         """
         Process LLM response with comprehensive validation and logging.
