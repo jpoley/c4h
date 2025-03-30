@@ -7,9 +7,10 @@ Path: c4h_services/src/bootstrap/prefect_runner.py
 from pathlib import Path
 import sys
 import os
-import uuid  # Add missing import
+import uuid
 import requests
 import time
+import json
 
 # Add the project root to the Python path
 # We need to go up enough levels to include both c4h_services and c4h_agents
@@ -23,13 +24,12 @@ import argparse
 from enum import Enum
 import yaml
 from typing import Dict, Any, Optional, List
-import json
 from datetime import datetime, timezone
 
 # Now imports should work correctly
-from c4h_services.src.api.service import create_app
 from c4h_agents.config import deep_merge
 from c4h_services.src.orchestration.orchestrator import Orchestrator
+from c4h_services.src.utils.lineage_utils import load_lineage_file, prepare_context_from_lineage, run_workflow_from_lineage
 
 logger = get_logger()
 
@@ -112,6 +112,24 @@ def load_configs(app_config_path: Optional[str] = None, system_config_paths: Opt
             raise
         return {}
 
+def execute_workflow_from_lineage(lineage_file_path: str, stage: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Run a workflow stage using a lineage file as input.
+    
+    Args:
+        lineage_file_path: Path to the lineage file
+        stage: Target stage to execute
+        config: Configuration dictionary
+        
+    Returns:
+        Workflow result
+    """
+    # Create orchestrator
+    orchestrator = Orchestrator(config)
+    
+    # Use the shared utility function
+    return run_workflow_from_lineage(orchestrator, lineage_file_path, stage, config)
+
 def run_workflow(project_path: Optional[str], intent_desc: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
     """Run a team-based workflow with the provided configuration"""
     try:
@@ -157,7 +175,9 @@ def run_workflow(project_path: Optional[str], intent_desc: Dict[str, Any], confi
 
 def send_workflow_request(host: str, port: int, project_path: str, intent_desc: Dict[str, Any],
                           app_config: Optional[Dict[str, Any]] = None,
-                          system_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                          system_config: Optional[Dict[str, Any]] = None,
+                          lineage_file: Optional[str] = None,
+                          stage: Optional[str] = None) -> Dict[str, Any]:
     """
     Send workflow request to server and return the response.
     
@@ -168,6 +188,8 @@ def send_workflow_request(host: str, port: int, project_path: str, intent_desc: 
         intent_desc: Intent description dictionary
         app_config: Application configuration (optional)
         system_config: System configuration (optional)
+        lineage_file: Path to lineage file (optional)
+        stage: Target stage to execute (optional)
         
     Returns:
         Response data from the server
@@ -182,13 +204,20 @@ def send_workflow_request(host: str, port: int, project_path: str, intent_desc: 
         "system_config": system_config
     }
     
+    # Add lineage information if provided
+    if lineage_file and stage:
+        request_data["lineage_file"] = lineage_file
+        request_data["stage"] = stage
+    
     # Log request details
     logger.info("client.sending_request",
                url=url,
                project_path=project_path,
                has_intent=bool(intent_desc),
                has_app_config=bool(app_config),
-               has_system_config=bool(system_config))
+               has_system_config=bool(system_config),
+               lineage_file=lineage_file,
+               stage=stage)
     
     # Send request
     try:
@@ -277,6 +306,10 @@ def main():
     parser.add_argument("--project-path", help="Path to the project (optional if defined in config)")
     parser.add_argument("--intent-file", help="Path to intent JSON file (optional if intent defined in config)")
     
+    # Lineage parameters
+    parser.add_argument("--lineage-file", help="Path to lineage file for workflow continuation")
+    parser.add_argument("--stage", choices=["discovery", "solution_designer", "coder"], help="Stage to execute from lineage")
+    
     # Client parameters
     parser.add_argument("--host", default="localhost", help="Host for client mode")
     parser.add_argument("--poll", action="store_true", help="Poll for workflow completion in client mode")
@@ -295,6 +328,9 @@ def main():
 
     # Service mode handling
     if args.mode == "service":
+        # Import here to avoid circular imports
+        from c4h_services.src.api.service import create_app
+        
         # Create FastAPI app with empty default config
         config = load_configs(args.config, args.system_configs)
         app = create_app(default_config=config)
@@ -339,7 +375,9 @@ def main():
             port=args.port,
             project_path=project_path,
             intent_desc=intent_desc,
-            app_config=config
+            app_config=config,
+            lineage_file=args.lineage_file,
+            stage=args.stage
         )
         
         # Check result and display
@@ -362,6 +400,19 @@ def main():
 
     # Load and merge configurations first to potentially get project path and intent
     config = load_configs(args.config, args.system_configs)
+    
+    # Check if lineage file is provided
+    if args.lineage_file and args.stage:
+        # Run workflow from lineage file
+        result = execute_workflow_from_lineage(
+            lineage_file_path=args.lineage_file,
+            stage=args.stage,
+            config=config
+        )
+        
+        if result.get("status") != "success":
+            sys.exit(1)
+        sys.exit(0)
     
     # Check if project path is available in config when not provided as argument
     if not args.project_path and not config.get('project', {}).get('path'):

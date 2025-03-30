@@ -4,7 +4,7 @@ Path: c4h_services/src/api/models.py
 """
 
 from pydantic import BaseModel, Field
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Literal
 
 class WorkflowRequest(BaseModel):
     """
@@ -15,6 +15,11 @@ class WorkflowRequest(BaseModel):
     intent: Dict[str, Any] = Field(..., description="Intent description for the workflow")
     system_config: Optional[Dict[str, Any]] = Field(default=None, description="Base system configuration")
     app_config: Optional[Dict[str, Any]] = Field(default=None, description="Application-specific configuration overrides")
+    lineage_file: Optional[str] = Field(default=None, description="Path to lineage file for workflow continuation")
+    stage: Optional[Literal["discovery", "solution_designer", "coder"]] = Field(
+        default=None, 
+        description="Stage to continue workflow from when using lineage file"
+    )
 
 class WorkflowResponse(BaseModel):
     """
@@ -38,3 +43,5 @@ class WorkflowDetail(BaseModel):
     storage_path: Optional[str] = Field(default=None, description="Path to stored results if available")
     error: Optional[str] = Field(default=None, description="Error message if status is 'error'")
     execution_metadata: Optional[Dict[str, Any]] = Field(default=None, description="Execution metadata and tracking info")
+    source_lineage: Optional[str] = Field(default=None, description="Source lineage file if workflow was continued")
+    stage: Optional[str] = Field(default=None, description="Stage that the workflow continued from if applicable")

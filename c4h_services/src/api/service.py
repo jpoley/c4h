@@ -10,11 +10,13 @@ from c4h_services.src.utils.logging import get_logger
 from pathlib import Path
 import uuid
 import os
+import json
 
 from c4h_agents.config import deep_merge
 from c4h_agents.core.project import Project
 from c4h_services.src.api.models import WorkflowRequest, WorkflowResponse
 from c4h_services.src.orchestration.orchestrator import Orchestrator
+from c4h_services.src.utils.lineage_utils import load_lineage_file, prepare_context_from_lineage
 
 logger = get_logger()
 
@@ -59,6 +61,63 @@ def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
             if request.app_config:
                 config = deep_merge(config, request.app_config)
             
+            # Check if lineage file is provided for workflow continuation
+            if request.lineage_file and request.stage:
+                logger.info("workflow.continuing_from_lineage",
+                           lineage_file=request.lineage_file,
+                           stage=request.stage)
+                           
+                try:
+                    # Load lineage data
+                    lineage_data = load_lineage_file(request.lineage_file)
+                    
+                    # Add intent to config for context preparation
+                    if request.intent:
+                        config['intent'] = request.intent
+                        
+                    # Add project path to config if provided
+                    if request.project_path:
+                        if 'project' not in config:
+                            config['project'] = {}
+                        config['project']['path'] = request.project_path
+                    
+                    # Prepare context from lineage
+                    context = prepare_context_from_lineage(lineage_data, request.stage, config)
+                    
+                    # Get workflow ID
+                    workflow_id = context["workflow_run_id"]
+                    
+                    # Execute workflow from the specified stage
+                    result = app.state.orchestrator.execute_workflow(
+                        entry_team=request.stage,
+                        context=context
+                    )
+                    
+                    # Store result
+                    workflow_storage[workflow_id] = {
+                        "status": result.get("status", "error"),
+                        "team_results": result.get("team_results", {}),
+                        "changes": result.get("data", {}).get("changes", []),
+                        "storage_path": os.path.join("workspaces", "lineage", workflow_id) if config.get("lineage", {}).get("enabled", False) else None,
+                        "source_lineage": request.lineage_file,
+                        "stage": request.stage
+                    }
+                    
+                    return WorkflowResponse(
+                        workflow_id=workflow_id,
+                        status=result.get("status", "error"),
+                        storage_path=workflow_storage[workflow_id].get("storage_path"),
+                        error=result.get("error") if result.get("status") == "error" else None
+                    )
+                    
+                except Exception as e:
+                    logger.error("workflow.lineage_processing_failed",
+                               lineage_file=request.lineage_file,
+                               stage=request.stage,
+                               error=str(e))
+                    raise HTTPException(status_code=500, detail=f"Lineage processing failed: {str(e)}")
+            
+            # Standard workflow initialization
             # Initialize workflow with consistent defaults
             prepared_config, context = app.state.orchestrator.initialize_workflow(
                 project_path=request.project_path,

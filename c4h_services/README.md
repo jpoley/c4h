@@ -733,6 +733,142 @@ Common errors and their solutions:
 - Implement authentication for multi-user environments
 - Use dotenv files for API keys instead of embedding in configuration
 
+
+# C4H Services
+
+C4H Services provides intelligent code refactoring capabilities through a workflow-based API. The system uses LLM agents to analyze, design, and implement code changes based on natural language intent descriptions.
+
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/c4h.git
+cd c4h
+
+# Create and activate virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -e .
+```
+
+## Usage
+
+C4H Services can be run in several modes:
+
+### 1. Workflow Mode
+
+Run a complete workflow directly on a project:
+
+```bash
+python -m c4h_services.src.bootstrap.prefect_runner workflow \
+  --project-path /path/to/project \
+  --intent-file intent.json \
+  --config config.yml
+```
+
+### 2. Service Mode
+
+Run as a REST API service:
+
+```bash
+python -m c4h_services.src.bootstrap.prefect_runner service \
+  --port 8000 \
+  --config config.yml
+```
+
+### 3. Client Mode
+
+Submit a workflow request to a running service:
+
+```bash
+python -m c4h_services.src.bootstrap.prefect_runner client \
+  --host localhost \
+  --port 8000 \
+  --project-path /path/to/project \
+  --intent-file intent.json \
+  --poll
+```
+
+## Continuing Workflows from Lineage Files
+
+You can continue a workflow from a specific stage using lineage files from previous executions. This is useful for:
+- Restarting failed workflows
+- Modifying intermediate results
+- Testing different implementations with the same analysis
+- Skipping time-consuming stages
+
+### Command Line
+
+Resume a workflow from the coder stage, using the output from the solution designer:
+
+```bash
+python -m c4h_services.src.bootstrap.prefect_runner workflow \
+  --config /path/to/config.yml \
+  --stage coder \
+  --lineage-file /path/to/lineage/20250330/wf_2350_11c00ca0-7c98-4a7a-be14-c8e6245e967a/events/44889ed0-90a4-4405-9aad-0cc779b6018c.json
+```
+
+Resume from the solution designer stage, using the output from the discovery stage:
+
+```bash
+python -m c4h_services.src.bootstrap.prefect_runner workflow \
+  --config /path/to/config.yml \
+  --stage solution_designer \
+  --lineage-file /path/to/lineage/20250330/wf_2350_11c00ca0-7c98-4a7a-be14-c8e6245e967a/events/discovery-event-id.json
+```
+
+### Through the API
+
+You can also continue workflows via the API by including the lineage file path and stage in your request:
+
+```json
+{
+  "project_path": "/path/to/project",
+  "intent": {"description": "Add error handling"},
+  "lineage_file": "/path/to/lineage/20250330/wf_2350_11c00ca0-7c98-4a7a-be14-c8e6245e967a/events/44889ed0-90a4-4405-9aad-0cc779b6018c.json",
+  "stage": "coder"
+}
+```
+
+### Finding Lineage Files
+
+Lineage files are stored in the lineage directory with the following structure:
+```
+workspaces/lineage/[date]/[workflow-id]/events/[event-id].json
+```
+
+Each event ID corresponds to a specific agent execution. To continue to the coder stage, use a lineage file from the solution_designer agent.
+
+## Configuration
+
+Create a configuration file (YAML) to customize workflow execution:
+
+```yaml
+project:
+  path: "/path/to/project"
+  workspace_root: "workspaces"
+
+intent:
+  description: "Add error handling to all API endpoints"
+
+llm_config:
+  default_provider: "anthropic"
+  default_model: "claude-3-opus-20240229"
+  
+  # Agent-specific configurations
+  agents:
+    discovery:
+      temperature: 0
+      
+    solution_designer:
+      temperature: 0.2
+      
+    coder:
+      temperature: 0
+```
+
 ## License
 
-[Your License Here]
+[Add license information]
