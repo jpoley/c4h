@@ -5,6 +5,8 @@ Path: c4h_agents/agents/base_llm.py
 
 from typing import Dict, Any, List, Tuple, Optional
 import time
+import re
+import json
 from datetime import datetime
 import litellm
 from litellm import completion
@@ -21,386 +23,538 @@ class BaseLLM:
             messages: List[Dict[str, str]],
             max_attempts: Optional[int] = None
         ) -> Tuple[str, Any]:
-            """
-            Get completion with automatic continuation handling.
-            Uses multi-level overlap detection for reliable response joining.
-            Handles overload conditions with exponential backoff.
+        """
+        Get completion with automatic continuation handling.
+        Uses multi-level overlap detection for reliable response joining.
+        Handles overload conditions with exponential backoff.
+        
+        Args:
+            messages: List of message dictionaries with role and content
+            max_attempts: Maximum number of continuation attempts
             
-            Args:
-                messages: List of message dictionaries with role and content
-                max_attempts: Maximum number of continuation attempts
-                
-            Returns:
-                Tuple of (accumulated_content, final_response)
-            """
-            try:
-                attempt = 0
-                max_tries = max_attempts or self.max_continuation_attempts
-                accumulated_content = ""
-                final_response = None
-                retry_count = 0
-                max_retries = 5  # Max retries for overload conditions
-                
-                # Get provider config
-                provider_config = self._get_provider_config(self.provider)
-                
-                # Track diagnostics for troubleshooting
-                diagnostics = {
-                    "attempts": 0,
-                    "overlap_attempts": 0,
-                    "exact_matches": 0,
-                    "hash_matches": 0,
-                    "token_matches": 0,
-                    "fallbacks": 0
-                }
-                
-                logger.info("llm.continuation_starting", 
-                        model=self.model_str,
-                        max_attempts=max_tries)
-                
-                # Basic completion parameters
-                completion_params = {
-                    "model": self.model_str,
-                    "messages": messages,
-                }
+        Returns:
+            Tuple of (accumulated_content, final_response)
+        """
+        try:
+            attempt = 0
+            max_tries = max_attempts or self.max_continuation_attempts
+            accumulated_content = ""
+            final_response = None
+            retry_count = 0
+            max_retries = 5  # Max retries for overload conditions
+            
+            # Track JSON structure state
+            json_state = {
+                "depth": 0,          # Track nesting level
+                "open_braces": 0,    # Count of unclosed braces
+                "open_brackets": 0,  # Count of unclosed brackets
+                "current_file": None,# Current file being processed
+                "object_count": 0    # Number of complete objects
+            }
+            
+            # Get provider config
+            provider_config = self._get_provider_config(self.provider)
+            
+            # Track diagnostics for troubleshooting
+            diagnostics = {
+                "attempts": 0,
+                "overlap_attempts": 0,
+                "exact_matches": 0,
+                "hash_matches": 0,
+                "token_matches": 0,
+                "fallbacks": 0,
+                "structure_repairs": 0
+            }
+            
+            logger.info("llm.continuation_starting", 
+                    model=self.model_str,
+                    max_attempts=max_tries)
+            
+            # Basic completion parameters
+            completion_params = {
+                "model": self.model_str,
+                "messages": messages,
+            }
 
-                # Only add temperature for providers that support it
-                if self.provider.value != "openai":
-                    completion_params["temperature"] = self.temperature
+            # Only add temperature for providers that support it
+            if self.provider.value != "openai":
+                completion_params["temperature"] = self.temperature
+            
+            # Add extended thinking only for Claude 3.7 Sonnet if explicitly enabled
+            if self.provider.value == "anthropic" and "claude-3-7-sonnet" in self.model:
+                # Check for extended thinking configuration
+                agent_name = self._get_agent_name()
+                agent_path = f"llm_config.agents.{agent_name}"
                 
-                # Add extended thinking only for Claude 3.7 Sonnet if explicitly enabled
-                if self.provider.value == "anthropic" and "claude-3-7-sonnet" in self.model:
-                    # Check for extended thinking configuration
-                    agent_name = self._get_agent_name()
-                    agent_path = f"llm_config.agents.{agent_name}"
+                # Get extended thinking settings from agent config
+                agent_thinking_config = self.config_node.get_value(f"{agent_path}.extended_thinking")
+                
+                # If not set at agent level, get from provider config
+                if not agent_thinking_config:
+                    agent_thinking_config = provider_config.get("extended_thinking", {})
+                
+                # Apply extended thinking ONLY if explicitly enabled
+                if agent_thinking_config and agent_thinking_config.get("enabled", False) is True:
+                    budget_tokens = agent_thinking_config.get("budget_tokens", 32000)
                     
-                    # Get extended thinking settings from agent config
-                    agent_thinking_config = self.config_node.get_value(f"{agent_path}.extended_thinking")
+                    # Apply limits for budget_tokens
+                    min_budget = provider_config.get("extended_thinking", {}).get("min_budget_tokens", 1024)
+                    max_budget = provider_config.get("extended_thinking", {}).get("max_budget_tokens", 128000)
+                    budget_tokens = max(min_budget, min(budget_tokens, max_budget))
                     
-                    # If not set at agent level, get from provider config
-                    if not agent_thinking_config:
-                        agent_thinking_config = provider_config.get("extended_thinking", {})
+                    # Configure thinking parameter
+                    completion_params["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": budget_tokens
+                    }
                     
-                    # Apply extended thinking ONLY if explicitly enabled
-                    if agent_thinking_config and agent_thinking_config.get("enabled", False) is True:
-                        budget_tokens = agent_thinking_config.get("budget_tokens", 32000)
-                        
-                        # Apply limits for budget_tokens
-                        min_budget = provider_config.get("extended_thinking", {}).get("min_budget_tokens", 1024)
-                        max_budget = provider_config.get("extended_thinking", {}).get("max_budget_tokens", 128000)
-                        budget_tokens = max(min_budget, min(budget_tokens, max_budget))
-                        
-                        # Configure thinking parameter
-                        completion_params["thinking"] = {
-                            "type": "enabled",
-                            "budget_tokens": budget_tokens
-                        }
-                        
-                        # When extended thinking is enabled, temperature MUST be set to 1
-                        # This is a requirement from Anthropic's API
-                        completion_params["temperature"] = 1
-                        
-                        # Set max_tokens to a valid value for Claude 3.7 Sonnet (max 64000)
-                        if "max_tokens" not in completion_params:
-                            completion_params["max_tokens"] = 64000
-                        else:
-                            # Ensure max_tokens doesn't exceed the model's limit
-                            completion_params["max_tokens"] = min(completion_params["max_tokens"], 64000)
-                        
-                        # Log extended thinking configuration
-                        logger.info("llm.extended_thinking_enabled",
-                                model=self.model,
-                                budget_tokens=budget_tokens,
-                                temperature=completion_params["temperature"],
-                                max_tokens=completion_params["max_tokens"])
+                    # When extended thinking is enabled, temperature MUST be set to 1
+                    # This is a requirement from Anthropic's API
+                    completion_params["temperature"] = 1
+                    
+                    # Set max_tokens to a valid value for Claude 3.7 Sonnet (max 64000)
+                    if "max_tokens" not in completion_params:
+                        completion_params["max_tokens"] = 64000
                     else:
-                        logger.debug("llm.extended_thinking_not_used",
-                                model=self.model,
-                                reason="not_explicitly_enabled")
-                
-                # Add any model-specific parameters from config
-                model_params = provider_config.get("model_params", {})
-                if model_params:
-                    logger.debug("llm.applying_model_params", 
-                                provider=self.provider.serialize(),
-                                params=list(model_params.keys()))
-                    completion_params.update(model_params)
-                
-                if "api_base" in provider_config:
-                    completion_params["api_base"] = provider_config["api_base"]
+                        # Ensure max_tokens doesn't exceed the model's limit
+                        completion_params["max_tokens"] = min(completion_params["max_tokens"], 64000)
                     
-                # For extended thinking with large max_tokens, we need to use streaming
-                use_streaming = False
-                if (self.provider.value == "anthropic" and 
-                    "claude-3-7-sonnet" in self.model and
-                    "thinking" in completion_params and
-                    completion_params.get("max_tokens", 0) > 21333):
-                    use_streaming = True
-                    completion_params["stream"] = True
-                    logger.info("llm.stream_enabled_for_extended_thinking",
+                    # Log extended thinking configuration
+                    logger.info("llm.extended_thinking_enabled",
                             model=self.model,
-                            max_tokens=completion_params.get("max_tokens"))
+                            budget_tokens=budget_tokens,
+                            temperature=completion_params["temperature"],
+                            max_tokens=completion_params["max_tokens"])
+                else:
+                    logger.debug("llm.extended_thinking_not_used",
+                            model=self.model,
+                            reason="not_explicitly_enabled")
+            
+            # Add any model-specific parameters from config
+            model_params = provider_config.get("model_params", {})
+            if model_params:
+                logger.debug("llm.applying_model_params", 
+                            provider=self.provider.serialize(),
+                            params=list(model_params.keys()))
+                completion_params.update(model_params)
+            
+            if "api_base" in provider_config:
+                completion_params["api_base"] = provider_config["api_base"]
+                
+            # For extended thinking with large max_tokens, we need to use streaming
+            use_streaming = False
+            if (self.provider.value == "anthropic" and 
+                "claude-3-7-sonnet" in self.model and
+                "thinking" in completion_params and
+                completion_params.get("max_tokens", 0) > 21333):
+                use_streaming = True
+                completion_params["stream"] = True
+                logger.info("llm.stream_enabled_for_extended_thinking",
+                        model=self.model,
+                        max_tokens=completion_params.get("max_tokens"))
 
-                # Check if we're dealing with Python/Code or JSON
-                is_code = any("```" in msg.get("content", "") or "def " in msg.get("content", "") 
-                            for msg in messages if msg.get("role") == "user")
-                is_json = any("json" in msg.get("content", "").lower() or 
-                            msg.get("content", "").strip().startswith("{") or 
-                            msg.get("content", "").strip().startswith("[") 
-                            for msg in messages if msg.get("role") == "user")
+            # Check if we're dealing with Python/Code, JSON, or diff content
+            is_code = any("```" in msg.get("content", "") or "def " in msg.get("content", "") 
+                        for msg in messages if msg.get("role") == "user")
+            is_json = any("json" in msg.get("content", "").lower() or 
+                        msg.get("content", "").strip().startswith("{") or 
+                        msg.get("content", "").strip().startswith("[") 
+                        for msg in messages if msg.get("role") == "user")
+            is_diff = any("--- " in msg.get("content", "") and "+++ " in msg.get("content", "")
+                        for msg in messages if msg.get("role") == "user")
 
-                # Define explicit overlap markers
-                begin_marker = "---BEGIN_EXACT_OVERLAP---"
-                end_marker = "---END_EXACT_OVERLAP---"
+            # Define explicit overlap markers
+            begin_marker = "---BEGIN_EXACT_OVERLAP---"
+            end_marker = "---END_EXACT_OVERLAP---"
 
-                # Start completion loop with continuation handling
-                while attempt < max_tries:
-                    if attempt > 0:
-                        diagnostics["attempts"] += 1
-                        
-                        # Calculate appropriate overlap size based on content
-                        content_lines = accumulated_content.splitlines()
-                        
-                        # Adaptive overlap size based on content length and type
-                        if is_code:
-                            # For code, use more lines to ensure complete syntactic blocks
-                            overlap_size = min(max(5, min(len(content_lines) // 3, 15)), len(content_lines))
-                        else:
-                            # For text/JSON, fewer lines are usually sufficient
-                            overlap_size = min(max(3, min(len(content_lines) // 4, 10)), len(content_lines))
-                        
-                        last_lines = content_lines[-overlap_size:]
-                        overlap_context = "\n".join(last_lines)
-                        
-                        # Create diagnostic snapshot of content state
-                        content_snapshot = {
-                            "last_chars": accumulated_content[-50:],
-                            "has_braces": "{" in overlap_context or "}" in overlap_context,
-                            "has_brackets": "[" in overlap_context or "]" in overlap_context,
-                            "has_parens": "(" in overlap_context or ")" in overlap_context,
-                            "open_braces": overlap_context.count("{") - overlap_context.count("}"),
-                            "open_brackets": overlap_context.count("[") - overlap_context.count("]"),
-                            "open_parens": overlap_context.count("(") - overlap_context.count(")")
-                        }
-                        
-                        logger.info("llm.continuation_attempt",
-                                attempt=attempt,
-                                messages_count=len(messages),
-                                overlap_lines=overlap_size,
-                                content_state=content_snapshot)
-                        
-                        # Choose appropriate continuation prompt based on content type
-                        if is_code:
-                            continuation_prompt = (
-                                "Continue the code exactly from where you left off.\n\n"
-                                "You MUST start by repeating these EXACT lines:\n\n"
-                                f"{begin_marker}\n{overlap_context}\n{end_marker}\n\n"
-                                "Do not modify these lines in any way - copy them exactly. "
-                                "After repeating these lines exactly, continue with the next part of the code. "
-                                "Maintain exact format, indentation, and structure. "
-                                "Do not add any explanatory text, comments, or markers outside the overlap section."
-                            )
-                        elif is_json:
-                            continuation_prompt = (
-                                "Continue the JSON response exactly from where you left off.\n\n"
-                                "You MUST start by repeating these EXACT lines:\n\n"
-                                f"{begin_marker}\n{overlap_context}\n{end_marker}\n\n"
-                                "Do not modify these lines in any way - copy them exactly. "
-                                "After repeating these lines exactly, continue with the next part of the JSON. "
-                                "Make sure your response starts with this overlap to ensure proper continuity."
-                            )
-                        else:
-                            continuation_prompt = (
-                                "Continue exactly from where you left off.\n\n"
-                                "You MUST start by repeating these EXACT lines:\n\n"
-                                f"{begin_marker}\n{overlap_context}\n{end_marker}\n\n"
-                                "Do not modify these lines in any way - copy them exactly. "
-                                "After repeating these lines exactly, continue where you left off. "
-                                "Do not add any explanatory text or markers."
-                            )
-                        
-                        # Add assistant and user messages for continuation
-                        messages.append({"role": "assistant", "content": accumulated_content})
-                        messages.append({"role": "user", "content": continuation_prompt})
-                        completion_params["messages"] = messages
+            # Helper function for analyzing JSON structure
+            def analyze_json_structure(content: str) -> Dict[str, Any]:
+                """Analyze JSON structure to determine current state"""
+                state = {
+                    "open_braces": 0,
+                    "open_brackets": 0,
+                    "in_string": False,
+                    "escape_next": False,
+                    "file_path": None
+                }
+                
+                for char in content:
+                    if state["escape_next"]:
+                        state["escape_next"] = False
+                        continue
                     
-                    try:
-                        if use_streaming:
-                            # Handle streaming response
-                            full_content = ""
-                            
-                            # Get streamed response
-                            response_stream = completion(**completion_params)
-                            
-                            # Process the stream
-                            for chunk in response_stream:
-                                try:
-                                    # Extract content from the chunk
-                                    if hasattr(chunk, 'choices') and chunk.choices:
-                                        delta = chunk.choices[0].delta
-                                        if hasattr(delta, 'content') and delta.content:
-                                            full_content += delta.content
-                                except Exception as e:
-                                    logger.error("llm.stream_chunk_processing_error", 
-                                            error=str(e),
-                                            chunk_type=type(chunk).__name__)
-                            
-                            # Create a proper response object with the necessary structure
-                            class StreamedResponse:
-                                def __init__(self, content):
-                                    self.choices = [type('Choice', (), {
-                                        'message': type('Message', (), {'content': content}),
-                                        'finish_reason': 'stop'
-                                    })]
-                                    self.usage = type('Usage', (), {
-                                        'prompt_tokens': 0,
-                                        'completion_tokens': 0,
-                                        'total_tokens': 0
-                                    })
-                                    
-                            # Create a response object that mimics the structure of a regular response
-                            response = StreamedResponse(full_content)
-                            
-                            logger.info("llm.stream_processing_complete", 
-                                    content_length=len(full_content),
-                                    finish_reason='stop')
+                    if char == '\\':
+                        state["escape_next"] = True
+                    elif char == '"' and not state["escape_next"]:
+                        state["in_string"] = not state["in_string"]
+                    elif not state["in_string"]:
+                        if char == '{':
+                            state["open_braces"] += 1
+                        elif char == '}':
+                            state["open_braces"] = max(0, state["open_braces"] - 1)
+                        elif char == '[':
+                            state["open_brackets"] += 1
+                        elif char == ']':
+                            state["open_brackets"] = max(0, state["open_brackets"] - 1)
+                
+                # Extract current file path if present
+                file_path_match = re.search(r'"file_path"\s*:\s*"([^"]+)"', content)
+                if file_path_match:
+                    state["file_path"] = file_path_match.group(1)
+                    
+                return state
+
+            # Helper function to sanitize problematic escape sequences
+            def sanitize_escape_sequences(content: str) -> str:
+                """Fix common escape sequence issues in JSON/diff content"""
+                # Double escape any single backslashes that aren't already escaped
+                # But avoid affecting already properly escaped sequences
+                content = re.sub(r'(?<!\\)\\(?!["\\bfnrtu])', r'\\\\', content)
+                
+                # Fix specific problematic escape sequences
+                content = content.replace('\\e', '\\\\e')
+                content = content.replace('\\p', '\\\\p')
+                
+                return content
+                
+            # Helper function to validate and repair JSON
+            def validate_and_repair_json(content: str, current_state: Dict[str, Any]) -> Tuple[str, bool, str]:
+                """Validate and attempt to repair JSON content"""
+                # First try basic sanitization
+                sanitized = sanitize_escape_sequences(content)
+                
+                # Try parsing as JSON
+                try:
+                    json.loads(sanitized)
+                    return sanitized, True, "Valid JSON after sanitization"
+                except json.JSONDecodeError as e:
+                    # Problem detected, try to fix
+                    if e.msg.startswith('Invalid \\escape'):
+                        # Handle invalid escape sequences
+                        position = max(0, e.pos - 10)
+                        context = sanitized[position:e.pos + 10]
+                        logger.warning("json.invalid_escape", position=e.pos, context=context)
+                        
+                        # Apply more aggressive sanitization around the problem area
+                        before = sanitized[:e.pos]
+                        problem_char = sanitized[e.pos] if e.pos < len(sanitized) else ''
+                        after = sanitized[e.pos+1:] if e.pos+1 < len(sanitized) else ''
+                        
+                        # Replace the problematic character
+                        if problem_char == '\\':
+                            # It's a backslash causing issues, escape it
+                            repaired = before + '\\\\' + after
                         else:
-                            # Standard non-streaming request
-                            response = completion(**completion_params)
-
-                        # Reset retry count on successful completion
-                        retry_count = 0
-
-                        if not hasattr(response, 'choices') or not response.choices:
-                            logger.error("llm.no_response",
-                                    attempt=attempt,
-                                    provider=self.provider.serialize())
-                            break
-
-                        # Process response through standard interface
-                        result = self._process_response(response, response)
-                        final_response = response
-                        
-                        # Extract current content from the response
-                        current_content = result['response']
-                        
-                        # For continuation attempts, handle joining with multi-level strategy
-                        if attempt > 0:
-                            # First, look for explicit markers
-                            cleaned_content = self._clean_overlap_markers(current_content, begin_marker, end_marker)
+                            # Otherwise just double any backslash before the problem
+                            repaired = before + problem_char + after
                             
-                            # If markers found and properly cleaned, use the cleaned content
-                            if cleaned_content != current_content:
-                                logger.info("llm.markers_found_and_cleaned")
-                                current_content = cleaned_content
-                                diagnostics["exact_matches"] += 1
-                            else:
-                                # Markers not found or not properly formatted, use advanced joining
-                                diagnostics["overlap_attempts"] += 1
+                        return repaired, False, f"Attempted escape sequence repair at position {e.pos}"
+                        
+                    elif e.msg.startswith('Expecting'):
+                        # Handle structural issues
+                        if current_state["open_braces"] > 0:
+                            # Missing closing braces
+                            repaired = sanitized + ('}' * current_state["open_braces"])
+                            return repaired, False, f"Added {current_state['open_braces']} missing closing braces"
+                        
+                        if current_state["open_brackets"] > 0:
+                            # Missing closing brackets
+                            repaired = sanitized + (']' * current_state["open_brackets"])
+                            return repaired, False, f"Added {current_state['open_brackets']} missing closing brackets"
+                            
+                # Could not repair automatically
+                return sanitized, False, "Could not fully repair JSON structure"
+
+            # Start completion loop with continuation handling
+            while attempt < max_tries:
+                if attempt > 0:
+                    diagnostics["attempts"] += 1
+                    
+                    # Calculate appropriate overlap size based on content
+                    content_lines = accumulated_content.splitlines()
+                    
+                    # Analyze the current JSON structure if applicable
+                    if is_json:
+                        current_state = analyze_json_structure(accumulated_content)
+                        json_state.update(current_state)
+                        
+                        # Log the current structure state for debugging
+                        logger.debug("json.structure_state", 
+                                    open_braces=current_state["open_braces"],
+                                    open_brackets=current_state["open_brackets"],
+                                    current_file=current_state["file_path"])
+                    
+                    # Adaptive overlap size based on content length and type
+                    if is_code:
+                        # For code, use more lines to ensure complete syntactic blocks
+                        overlap_size = min(max(5, min(len(content_lines) // 3, 15)), len(content_lines))
+                    elif is_json or is_diff:
+                        # For JSON/diff, try to include complete objects or chunks
+                        overlap_size = min(max(8, min(len(content_lines) // 3, 20)), len(content_lines))
+                    else:
+                        # For text, fewer lines are usually sufficient
+                        overlap_size = min(max(3, min(len(content_lines) // 4, 10)), len(content_lines))
+                    
+                    last_lines = content_lines[-overlap_size:]
+                    overlap_context = "\n".join(last_lines)
+                    
+                    # Create diagnostic snapshot of content state
+                    content_snapshot = {
+                        "last_chars": accumulated_content[-50:] if len(accumulated_content) > 50 else accumulated_content,
+                        "has_braces": "{" in overlap_context or "}" in overlap_context,
+                        "has_brackets": "[" in overlap_context or "]" in overlap_context,
+                        "has_parens": "(" in overlap_context or ")" in overlap_context,
+                        "open_braces": overlap_context.count("{") - overlap_context.count("}"),
+                        "open_brackets": overlap_context.count("[") - overlap_context.count("]"),
+                        "open_parens": overlap_context.count("(") - overlap_context.count(")")
+                    }
+                    
+                    logger.info("llm.continuation_attempt",
+                            attempt=attempt,
+                            messages_count=len(messages),
+                            overlap_lines=overlap_size,
+                            content_state=content_snapshot)
+                    
+                    # Choose appropriate continuation prompt based on content type
+                    if is_json and is_diff:
+                        # Special handling for JSON with diffs
+                        current_file = json_state.get("file_path", "unknown file")
+                        is_array_item = '"changes"' in accumulated_content
+                        
+                        continuation_prompt = (
+                            "Continue the JSON response exactly from where you left off.\n\n"
+                            f"Current context: Inside the 'changes' array, processing file {current_file}\n"
+                            f"Structure state: {json_state['open_braces']} open braces, {json_state['open_brackets']} open brackets\n\n"
+                            f"{begin_marker}\n{overlap_context}\n{end_marker}\n\n"
+                            "Copy these lines exactly, then continue. Important rules:\n"
+                            "1. Each change object must be complete with all fields (file_path, type, description, diff)\n"
+                            "2. In diff content, escape all backslashes properly (use \\\\ for a single backslash)\n"
+                            "3. Close all JSON objects and arrays properly\n"
+                            "4. Maintain exact indentation and formatting"
+                        )
+                    elif is_json:
+                        # Regular JSON continuation
+                        continuation_prompt = (
+                            "Continue the JSON response exactly from where you left off.\n\n"
+                            "You MUST start by repeating these EXACT lines:\n\n"
+                            f"{begin_marker}\n{overlap_context}\n{end_marker}\n\n"
+                            "Do not modify these lines in any way - copy them exactly. "
+                            "After repeating these lines exactly, continue with the next part of the JSON. "
+                            "Make sure your response starts with this overlap to ensure proper continuity. "
+                            "Be extra careful with escape sequences and ensure all JSON is valid."
+                        )
+                    elif is_code:
+                        continuation_prompt = (
+                            "Continue the code exactly from where you left off.\n\n"
+                            "You MUST start by repeating these EXACT lines:\n\n"
+                            f"{begin_marker}\n{overlap_context}\n{end_marker}\n\n"
+                            "Do not modify these lines in any way - copy them exactly. "
+                            "After repeating these lines exactly, continue with the next part of the code. "
+                            "Maintain exact format, indentation, and structure. "
+                            "Do not add any explanatory text, comments, or markers outside the overlap section."
+                        )
+                    else:
+                        continuation_prompt = (
+                            "Continue exactly from where you left off.\n\n"
+                            "You MUST start by repeating these EXACT lines:\n\n"
+                            f"{begin_marker}\n{overlap_context}\n{end_marker}\n\n"
+                            "Do not modify these lines in any way - copy them exactly. "
+                            "After repeating these lines exactly, continue where you left off. "
+                            "Do not add any explanatory text or markers."
+                        )
+                    
+                    # Add assistant and user messages for continuation
+                    messages.append({"role": "assistant", "content": accumulated_content})
+                    messages.append({"role": "user", "content": continuation_prompt})
+                    completion_params["messages"] = messages
+                
+                try:
+                    if use_streaming:
+                        # Handle streaming response
+                        full_content = ""
+                        
+                        # Get streamed response
+                        response_stream = completion(**completion_params)
+                        
+                        # Process the stream
+                        for chunk in response_stream:
+                            try:
+                                # Extract content from the chunk
+                                if hasattr(chunk, 'choices') and chunk.choices:
+                                    delta = chunk.choices[0].delta
+                                    if hasattr(delta, 'content') and delta.content:
+                                        full_content += delta.content
+                            except Exception as e:
+                                logger.error("llm.stream_chunk_processing_error", 
+                                        error=str(e),
+                                        chunk_type=type(chunk).__name__)
+                        
+                        # Create a proper response object with the necessary structure
+                        class StreamedResponse:
+                            def __init__(self, content):
+                                self.choices = [type('Choice', (), {
+                                    'message': type('Message', (), {'content': content}),
+                                    'finish_reason': 'stop'
+                                })]
+                                self.usage = type('Usage', (), {
+                                    'prompt_tokens': 0,
+                                    'completion_tokens': 0,
+                                    'total_tokens': 0
+                                })
                                 
-                                # If accumulated_content and last_lines are available, use sophisticated joining
-                                if accumulated_content and last_lines:
-                                    # Log the first part of current content for debugging
-                                    logger.debug("llm.overlap_matching_attempt",
-                                                overlap_lines=len(last_lines),
-                                                expected_overlap_preview=overlap_context[:200] + "..." if len(overlap_context) > 200 else overlap_context,
-                                                received_preview=current_content[:200] + "..." if len(current_content) > 200 else current_content)
+                        # Create a response object that mimics the structure of a regular response
+                        response = StreamedResponse(full_content)
+                        
+                        logger.info("llm.stream_processing_complete", 
+                                content_length=len(full_content),
+                                finish_reason='stop')
+                    else:
+                        # Standard non-streaming request
+                        response = completion(**completion_params)
+
+                    # Reset retry count on successful completion
+                    retry_count = 0
+
+                    if not hasattr(response, 'choices') or not response.choices:
+                        logger.error("llm.no_response",
+                                attempt=attempt,
+                                provider=self.provider.serialize())
+                        break
+
+                    # Process response through standard interface
+                    result = self._process_response(response, response)
+                    final_response = response
+                    
+                    # Extract current content from the response
+                    current_content = result['response']
+                    
+                    # For continuation attempts, handle joining with multi-level strategy
+                    if attempt > 0:
+                        # First, look for explicit markers
+                        cleaned_content = self._clean_overlap_markers(current_content, begin_marker, end_marker)
+                        
+                        # If markers found and properly cleaned, use the cleaned content
+                        if cleaned_content != current_content:
+                            logger.info("llm.markers_found_and_cleaned")
+                            current_content = cleaned_content
+                            diagnostics["exact_matches"] += 1
+                        else:
+                            # Markers not found or not properly formatted, use advanced joining
+                            diagnostics["overlap_attempts"] += 1
+                            
+                            # If json content, try to sanitize and validate
+                            if is_json:
+                                sanitized, is_valid, repair_msg = validate_and_repair_json(
+                                    current_content, json_state)
                                     
-                                    # Try multi-level matching with full diagnostics
-                                    joined_content, match_method = self._join_with_overlap(
-                                        accumulated_content, 
-                                        current_content,
-                                        last_lines,
-                                        is_code
-                                    )
-                                    
-                                    # Update diagnostics based on match method
-                                    if match_method == "exact":
-                                        diagnostics["exact_matches"] += 1
-                                    elif match_method == "hash":
-                                        diagnostics["hash_matches"] += 1
-                                    elif match_method == "token":
-                                        diagnostics["token_matches"] += 1
-                                    else:
-                                        diagnostics["fallbacks"] += 1
-                                    
-                                    # Update accumulated content
-                                    accumulated_content = joined_content
+                                if sanitized != current_content:
+                                    logger.info("json.content_sanitized", message=repair_msg)
+                                    current_content = sanitized
+                                    diagnostics["structure_repairs"] += 1
+                            
+                            # If accumulated_content and last_lines are available, use sophisticated joining
+                            if accumulated_content and last_lines:
+                                # Log the first part of current content for debugging
+                                logger.debug("llm.overlap_matching_attempt",
+                                            overlap_lines=len(last_lines),
+                                            expected_overlap_preview=overlap_context[:200] + "..." if len(overlap_context) > 200 else overlap_context,
+                                            received_preview=current_content[:200] + "..." if len(current_content) > 200 else current_content)
+                                
+                                # Try multi-level matching with full diagnostics
+                                joined_content, match_method = self._join_with_overlap(
+                                    accumulated_content, 
+                                    current_content,
+                                    last_lines,
+                                    is_code or is_json or is_diff
+                                )
+                                
+                                # Update diagnostics based on match method
+                                if match_method == "exact":
+                                    diagnostics["exact_matches"] += 1
+                                elif match_method == "hash":
+                                    diagnostics["hash_matches"] += 1
+                                elif match_method == "token":
+                                    diagnostics["token_matches"] += 1
                                 else:
-                                    # No previous content or overlap lines, use directly
-                                    accumulated_content += current_content
                                     diagnostics["fallbacks"] += 1
-                        else:
-                            # First response, just use it directly
-                            accumulated_content = current_content
-                        
-                        # Validate joined content for potential syntax errors
-                        if is_code and attempt > 0:
-                            is_valid = self._validate_joined_content(accumulated_content)
-                            if not is_valid:
-                                logger.warning("llm.syntax_validation_warning", 
-                                            attempt=attempt, 
-                                            continuation_state="potential_syntax_issue")
-                        
-                        # Check if we need to continue
-                        finish_reason = getattr(response.choices[0], 'finish_reason', None)
-                        
-                        if finish_reason == 'length':
-                            logger.info("llm.length_limit_reached", attempt=attempt)
-                            attempt += 1
-                            continue
-                        else:
-                            logger.info("llm.completion_finished",
-                                    finish_reason=finish_reason,
-                                    continuation_count=attempt)
-                            break
-
-                    except litellm.InternalServerError as e:
-                        # Handle overload errors with exponential backoff
-                        error_data = str(e)
-                        if "overloaded_error" in error_data:
-                            retry_count += 1
-                            if retry_count > max_retries:
-                                logger.error("llm.max_retries_exceeded",
-                                        retries=retry_count,
-                                        error=str(e))
-                                raise
                                 
-                            # Exponential backoff
-                            delay = min(2 ** (retry_count - 1), 32)  # Max 32 second delay
-                            logger.warning("llm.overloaded_retrying",
-                                        retry_count=retry_count,
-                                        delay=delay)
-                            time.sleep(delay)
-                            continue
-                        else:
-                            raise
+                                # Update accumulated content
+                                accumulated_content = joined_content
+                            else:
+                                # No previous content or overlap lines, use directly
+                                accumulated_content += current_content
+                                diagnostics["fallbacks"] += 1
+                    else:
+                        # First response, just use it directly
+                        accumulated_content = current_content
+                    
+                    # Validate joined content for potential syntax errors
+                    if (is_code or is_json) and attempt > 0:
+                        is_valid = self._validate_joined_content(accumulated_content, is_json)
+                        if not is_valid:
+                            logger.warning("llm.syntax_validation_warning", 
+                                        attempt=attempt, 
+                                        continuation_state="potential_syntax_issue")
+                    
+                    # Check if we need to continue
+                    finish_reason = getattr(response.choices[0], 'finish_reason', None)
+                    
+                    if finish_reason == 'length':
+                        logger.info("llm.length_limit_reached", attempt=attempt)
+                        attempt += 1
+                        continue
+                    else:
+                        logger.info("llm.completion_finished",
+                                finish_reason=finish_reason,
+                                continuation_count=attempt)
+                        break
 
-                    except Exception as e:
-                        logger.error("llm.request_failed", 
-                                error=str(e),
-                                attempt=attempt)
+                except litellm.InternalServerError as e:
+                    # Handle overload errors with exponential backoff
+                    error_data = str(e)
+                    if "overloaded_error" in error_data:
+                        retry_count += 1
+                        if retry_count > max_retries:
+                            logger.error("llm.max_retries_exceeded",
+                                    retries=retry_count,
+                                    error=str(e))
+                            raise
+                            
+                        # Exponential backoff
+                        delay = min(2 ** (retry_count - 1), 32)  # Max 32 second delay
+                        logger.warning("llm.overloaded_retrying",
+                                    retry_count=retry_count,
+                                    delay=delay)
+                        time.sleep(delay)
+                        continue
+                    else:
                         raise
 
-                # Log summary of continuations
-                if attempt > 0:
-                    logger.info("llm.continuation_summary", 
-                            total_attempts=attempt,
-                            model=self.model_str, 
-                            total_length=len(accumulated_content),
-                            diagnostics=diagnostics)
+                except Exception as e:
+                    logger.error("llm.request_failed", 
+                            error=str(e),
+                            attempt=attempt)
+                    raise
 
-                # Update the content in the final response
-                if final_response and hasattr(final_response, 'choices') and final_response.choices:
-                    final_response.choices[0].message.content = accumulated_content
+            # Log summary of continuations
+            if attempt > 0:
+                logger.info("llm.continuation_summary", 
+                        total_attempts=attempt,
+                        model=self.model_str, 
+                        total_length=len(accumulated_content),
+                        diagnostics=diagnostics)
 
-                # Track actual continuation count for metrics
-                self.metrics["continuation_attempts"] = attempt
-                return accumulated_content, final_response
+            # Update the content in the final response
+            if final_response and hasattr(final_response, 'choices') and final_response.choices:
+                final_response.choices[0].message.content = accumulated_content
 
-            except Exception as e:
-                logger.error("llm.continuation_failed", error=str(e), error_type=type(e).__name__)
-                raise
+            # Track actual continuation count for metrics
+            self.metrics["continuation_attempts"] = attempt
+            return accumulated_content, final_response
+
+        except Exception as e:
+            logger.error("llm.continuation_failed", error=str(e), error_type=type(e).__name__)
+            raise
 
     def _join_with_overlap(self, previous: str, current: str, overlap_lines: List[str], is_code: bool = False) -> Tuple[str, str]:
         """
@@ -581,13 +735,14 @@ class BaseLLM:
         # No good match found
         return 0
 
-    def _validate_joined_content(self, content: str) -> bool:
+    def _validate_joined_content(self, content: str, is_json: bool = False) -> bool:
         """
-        Basic syntax validation for potentially problematic patterns.
+        Enhanced syntax validation for potentially problematic patterns.
         Checks for unbalanced structures and other common issues.
         
         Args:
             content: The content to validate
+            is_json: Whether to perform JSON-specific validation
             
         Returns:
             True if validation passes, False if issues detected
@@ -597,26 +752,47 @@ class BaseLLM:
         bracket_balance = content.count("[") - content.count("]")
         paren_balance = content.count("(") - content.count(")")
         
-        # Check for incomplete Python blocks
-        incomplete_block = False
-        lines = content.splitlines()
-        block_indent = None
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            # Check for block starters without corresponding blocks
-            if stripped.endswith(":") and i < len(lines) - 1:
-                indent = len(line) - len(line.lstrip())
-                next_indent = len(lines[i+1]) - len(lines[i+1].lstrip())
-                if next_indent <= indent:  # Next line should be indented if block continues
-                    incomplete_block = True
-                    break
+        if is_json:
+            # For JSON, attempt to parse a sample to detect issues
+            try:
+                # Try to find complete JSON objects and validate them
+                if content.strip().startswith("{") and "}" in content:
+                    # Find the last complete JSON object
+                    last_brace_pos = content.rindex("}")
+                    json_sample = content[:last_brace_pos+1]
+                    json.loads(json_sample)
+                    
+                # Look for specific invalid escape sequences
+                if re.search(r'(?<!\\)\\(?!["\\/bfnrt])', content):
+                    logger.warning("llm.invalid_escape_sequences_detected")
+                    return False
+                    
+            except json.JSONDecodeError as e:
+                logger.warning("llm.json_validation_failed", 
+                            error=str(e),
+                            position=e.pos)
+                return False
+        else:
+            # For code, check for incomplete Python blocks
+            incomplete_block = False
+            lines = content.splitlines()
+            block_indent = None
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                # Check for block starters without corresponding blocks
+                if stripped.endswith(":") and i < len(lines) - 1:
+                    indent = len(line) - len(line.lstrip())
+                    next_indent = len(lines[i+1]) - len(lines[i+1].lstrip())
+                    if next_indent <= indent:  # Next line should be indented if block continues
+                        incomplete_block = True
+                        break
         
-        if brace_balance != 0 or bracket_balance != 0 or paren_balance != 0 or incomplete_block:
+        if brace_balance != 0 or bracket_balance != 0 or paren_balance != 0 or (not is_json and incomplete_block):
             logger.warning("llm.syntax_validation_failed",
                         brace_balance=brace_balance,
                         bracket_balance=bracket_balance,
                         paren_balance=paren_balance,
-                        incomplete_block=incomplete_block)
+                        incomplete_block=incomplete_block if not is_json else None)
             return False
         return True
 
@@ -718,7 +894,6 @@ class BaseLLM:
         
         # Default joining with newline to maintain readability
         return previous + "\n" + current
-
 
     def _fuzzy_line_join(self, previous: str, overlap_lines: List[str], current: str) -> str:
         """

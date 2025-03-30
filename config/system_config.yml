@@ -110,13 +110,14 @@ llm_config:
           2. File relationships
           3. Code dependencies
           4. Available functionality
+
     solution_designer:
       provider: "anthropic"
       model: "claude-3-7-sonnet-20250219"
       temperature: 1
       extended_thinking:
         enabled: true
-        budget_tokens: 32000 # 32k tokens for extended thinking
+        budget_tokens: 32000
       prompts:
         system: |
           You are a code modification solution designer that returns ONLY git-style diffs in JSON format.
@@ -153,10 +154,18 @@ llm_config:
           --- a/existing_file.py
           +++ b/existing_file.py
           @@ -1,3 +1,4 @@
-           context line
+          context line
           -removed line
           +added line
-           context line
+          context line
+
+          CONTINUATION HANDLING:
+          - For long responses that may be split across multiple completions:
+          - Complete each change object fully before starting a new one
+          - Never split a single "diff" field across completions
+          - Ensure proper JSON escaping, especially for backslashes and quotes in diffs
+          - Place commas after each complete change object
+          - Properly nest all JSON structures so partial responses remain valid
 
           RULES:
           - Use /dev/null for create/delete operations
@@ -166,6 +175,8 @@ llm_config:
           - Return ONLY the JSON object, no explanations
           - Ensure all paths use forward slashes
           - Keep descriptions short and clear
+          - Escape all backslashes and quotes in diff content with double backslashes
+          - Verify each change object is complete and properly formatted
 
         solution: |
           Source Code:
