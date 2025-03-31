@@ -312,8 +312,6 @@ class BaseLineage:
     Path: c4h_agents/agents/base_lineage.py
     """
 
-    # Only showing the modified _write_file_event method - all other methods remain unchanged
-
     def _write_file_event(self, event: LineageEvent) -> None:
         """Write event to file system with minimal processing"""
         if not self.enabled or not self.lineage_dir or not self.backends.get("file", {}).get("enabled", False):
@@ -346,7 +344,11 @@ class BaseLineage:
                 "llm_input": {
                     "system_message": event.messages.system if hasattr(event.messages, "system") else None,
                     "user_message": event.messages.user if hasattr(event.messages, "user") else None,
-                    "formatted_request": event.messages.formatted_request if hasattr(event.messages, "formatted_request") else None,
+                    # Only include formatted_request if it contains different content
+                    "formatted_request": (event.messages.formatted_request if hasattr(event.messages, "formatted_request") and 
+                                        event.messages.formatted_request and 
+                                        event.messages.formatted_request != event.messages.user 
+                                        else None)
                 },
                 "llm_output": self._serialize_value(event.raw_output),
                 "metrics": self._serialize_value(event.metrics),

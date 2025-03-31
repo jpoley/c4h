@@ -204,10 +204,12 @@ class BaseAgent(BaseConfig, BaseLLM):
                             user_message=user_message[:10] + "..." if len(user_message) > 10 else user_message)
                             
             # Create complete messages object for LLM and lineage tracking
+            # FIXED: Don't duplicate content between user and formatted_request
+            # Only store the formatted_request if it's different from user_message
             messages = LLMMessages(
                 system=system_message,
                 user=user_message,
-                formatted_request=user_message,
+                formatted_request="",  # Don't store duplicate content
                 raw_context=lineage_context
             )
             
