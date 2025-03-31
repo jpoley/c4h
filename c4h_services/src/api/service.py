@@ -5,24 +5,29 @@ Path: c4h_services/src/api/service.py
 
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
 from c4h_services.src.utils.logging import get_logger
 from pathlib import Path
 import uuid
 import os
 import json
+import uuid
+from datetime import datetime
 
 from c4h_agents.config import deep_merge
 from c4h_agents.core.project import Project
-from c4h_services.src.api.models import WorkflowRequest, WorkflowResponse
+from c4h_services.src.api.models import (WorkflowRequest, WorkflowResponse, 
+                                        JobRequest, JobResponse, JobStatus)
 from c4h_services.src.orchestration.orchestrator import Orchestrator
 from c4h_services.src.utils.lineage_utils import load_lineage_file, prepare_context_from_lineage
 
 logger = get_logger()
 
-# In-memory storage for workflow results (for demonstration purposes)
+# In-memory storage for workflow and job results (for demonstration purposes)
 # In production, this would be a database or persistent storage
 workflow_storage: Dict[str, Dict[str, Any]] = {}
+job_storage: Dict[str, Dict[str, Any]] = {}
+job_to_workflow_map: Dict[str, str] = {}
 
 def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
     """
@@ -214,7 +219,201 @@ def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
             "workflows_tracked": len(workflow_storage),
             "teams_available": len(app.state.orchestrator.teams)
         }
+        
+    # Jobs API endpoints
+    @app.post("/api/v1/jobs", response_model=JobResponse)
+    async def create_job(request: JobRequest):
+        """
+        Create a new job with structured configuration.
+        Maps the job request to workflow request format and executes the workflow.
+        """
+        try:
+            # Generate a job ID with UUID
+            job_id = f"job_{str(uuid.uuid4())}"
             
+            # Map job request to workflow request format
+            workflow_request = map_job_to_workflow_request(request)
+            
+            logger.info("jobs.request_mapped", 
+                      job_id=job_id, 
+                      workflow_request_keys=list(workflow_request.dict().keys()))
+            
+            # Call the workflow endpoint
+            workflow_response = await run_workflow(workflow_request)
+            
+            # Map the workflow response to a job response
+            job_response = JobResponse(
+                job_id=job_id,
+                status=workflow_response.status,
+                storage_path=workflow_response.storage_path,
+                error=workflow_response.error
+            )
+            
+            # Store job information
+            job_storage[job_id] = {
+                "status": workflow_response.status,
+                "storage_path": workflow_response.storage_path,
+                "error": workflow_response.error,
+                "created_at": datetime.now().isoformat(),
+                "workflow_id": workflow_response.workflow_id
+            }
+            
+            # Store job to workflow mapping
+            job_to_workflow_map[job_id] = workflow_response.workflow_id
+            
+            logger.info("jobs.created", 
+                      job_id=job_id, 
+                      workflow_id=workflow_response.workflow_id,
+                      status=workflow_response.status)
+            
+            return job_response
+            
+        except Exception as e:
+            logger.error("jobs.creation_failed", error=str(e))
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/api/v1/jobs/{job_id}", response_model=JobStatus)
+    async def get_job_status(job_id: str):
+        """
+        Get status of a job.
+        Retrieves the workflow status and maps it to job status format.
+        """
+        try:
+            # Check if job exists
+            if job_id not in job_storage:
+                raise HTTPException(status_code=404, detail="Job not found")
+                
+            # Get workflow ID from mapping
+            workflow_id = job_to_workflow_map.get(job_id)
+            if not workflow_id:
+                raise HTTPException(status_code=404, detail="No workflow found for this job")
+            
+            # Get workflow status
+            workflow_data = workflow_storage.get(workflow_id, {})
+            if not workflow_data:
+                # Try to get fresh status from workflow endpoint
+                try:
+                    workflow_response = await get_workflow(workflow_id)
+                    workflow_data = {
+                        "status": workflow_response.status,
+                        "storage_path": workflow_response.storage_path,
+                        "error": workflow_response.error
+                    }
+                except Exception as e:
+                    logger.error("jobs.workflow_status_fetch_failed", 
+                               job_id=job_id, 
+                               workflow_id=workflow_id, 
+                               error=str(e))
+                    workflow_data = job_storage[job_id]
+            
+            # Update job storage with latest status
+            job_storage[job_id].update({
+                "status": workflow_data.get("status"),
+                "storage_path": workflow_data.get("storage_path"),
+                "error": workflow_data.get("error"),
+                "last_checked": datetime.now().isoformat()
+            })
+            
+            # Create job status response
+            job_status = JobStatus(
+                job_id=job_id,
+                status=workflow_data.get("status", "unknown"),
+                storage_path=workflow_data.get("storage_path"),
+                error=workflow_data.get("error"),
+                changes=workflow_data.get("changes")
+            )
+            
+            logger.info("jobs.status_checked", 
+                      job_id=job_id, 
+                      workflow_id=workflow_id,
+                      status=job_status.status)
+            
+            return job_status
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("jobs.status_check_failed", 
+                       job_id=job_id, 
+                       error=str(e))
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    # Helper function to map job request to workflow request
+    def map_job_to_workflow_request(job_request: JobRequest) -> WorkflowRequest:
+        """
+        Map JobRequest to WorkflowRequest format.
+        Transforms the structured job configuration to flat workflow configuration.
+        """
+        try:
+            # Get project path from workorder
+            project_path = job_request.workorder.project.path
+            
+            # Get intent from workorder
+            intent_dict = job_request.workorder.intent.dict(exclude_none=True)
+            
+            # Initialize app_config with project settings
+            app_config = {
+                "project": job_request.workorder.project.dict(exclude_none=True),
+                "intent": intent_dict
+            }
+            
+            # Add team configuration if provided
+            if job_request.team:
+                team_dict = job_request.team.dict(exclude_none=True)
+                # Merge team configuration into app_config
+                for key, value in team_dict.items():
+                    if value:
+                        app_config[key] = value
+            
+            # Add runtime configuration if provided
+            if job_request.runtime:
+                runtime_dict = job_request.runtime.dict(exclude_none=True)
+                # Merge runtime configuration into app_config
+                for key, value in runtime_dict.items():
+                    if value:
+                        app_config[key] = value
+            
+            # Create workflow request
+            workflow_request = WorkflowRequest(
+                project_path=project_path,
+                intent=intent_dict,
+                app_config=app_config
+            )
+            
+            logger.debug("jobs.mapping.job_to_workflow", 
+                       project_path=project_path,
+                       app_config_keys=list(app_config.keys()))
+            
+            return workflow_request
+            
+        except Exception as e:
+            logger.error("jobs.mapping.failed", error=str(e))
+            raise ValueError(f"Failed to map job request to workflow request: {str(e)}")
+    
+    # Helper function to map workflow storage data to job changes
+    def map_workflow_to_job_changes(workflow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Map workflow storage data to job changes format.
+        """
+        try:
+            changes = workflow_data.get("changes", [])
+            if not changes:
+                # Try to get changes from data field
+                changes = workflow_data.get("data", {}).get("changes", [])
+            
+            # Format changes for job response
+            formatted_changes = []
+            for change in changes:
+                formatted_change = {
+                    "file": change.get("file"),
+                    "change": change.get("change")
+                }
+                formatted_changes.append(formatted_change)
+            return formatted_changes
+        except Exception as e:
+            logger.error("jobs.mapping.changes_failed", error=str(e))
+            return []
+    
     return app
 
 # Default app instance for direct imports
