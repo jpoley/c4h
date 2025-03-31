@@ -7,6 +7,7 @@ from typing import Dict, Any
 from pathlib import Path
 import json
 from datetime import datetime, timezone
+import uuid
 from c4h_services.src.utils.logging import get_logger
 
 logger = get_logger()
@@ -46,7 +47,17 @@ def load_lineage_file(lineage_file_path: str) -> Dict[str, Any]:
                    path=str(lineage_file_path))
         raise
 
-def prepare_context_from_lineage(lineage_data: Dict[str, Any], stage: str, config: Dict[str, Any]) -> Dict[str, Any]:
+def generate_new_run_id() -> str:
+    """
+    Generate a new run ID with embedded timestamp.
+    
+    Returns:
+        A new workflow run ID
+    """
+    time_str = datetime.now().strftime('%H%M')
+    return f"wf_{time_str}_{uuid.uuid4()}"
+
+def prepare_context_from_lineage(lineage_data: Dict[str, Any], stage: str, config: Dict[str, Any], keep_runid: bool = True) -> Dict[str, Any]:
     """
     Prepare workflow context from lineage data for the specified stage.
     
@@ -54,15 +65,26 @@ def prepare_context_from_lineage(lineage_data: Dict[str, Any], stage: str, confi
         lineage_data: Parsed lineage event data
         stage: Target stage to execute
         config: Configuration dictionary
+        keep_runid: Whether to keep the original run ID from the lineage file
         
     Returns:
         Context dictionary for the specified stage
     """
     try:
-        # Extract workflow ID
-        workflow_run_id = lineage_data.get("workflow", {}).get("run_id")
-        if not workflow_run_id:
+        # Extract workflow ID from lineage data
+        original_run_id = lineage_data.get("workflow", {}).get("run_id")
+        if not original_run_id:
             raise ValueError("No workflow run ID found in lineage data")
+        
+        # Generate new run ID if requested (default behavior is now to generate a new ID)
+        if not keep_runid:
+            workflow_run_id = generate_new_run_id()
+            logger.info("lineage.generated_new_run_id", 
+                      original_run_id=original_run_id,
+                      new_run_id=workflow_run_id)
+        else:
+            workflow_run_id = original_run_id
+            logger.info("lineage.using_original_run_id", run_id=workflow_run_id)
             
         # Extract agent info
         agent_name = lineage_data.get("agent", {}).get("name")
@@ -85,7 +107,8 @@ def prepare_context_from_lineage(lineage_data: Dict[str, Any], stage: str, confi
             "config": config,
             "lineage_source": {
                 "agent": agent_name,
-                "event_id": lineage_data.get("event_id")
+                "event_id": lineage_data.get("event_id"),
+                "original_run_id": original_run_id
             }
         }
         
@@ -131,7 +154,7 @@ def prepare_context_from_lineage(lineage_data: Dict[str, Any], stage: str, confi
         logger.error("context.preparation_failed", error=str(e))
         raise
 
-def run_workflow_from_lineage(orchestrator, lineage_file_path: str, stage: str, config: Dict[str, Any]) -> Dict[str, Any]:
+def run_workflow_from_lineage(orchestrator, lineage_file_path: str, stage: str, config: Dict[str, Any], keep_runid: bool = True) -> Dict[str, Any]:
     """
     Run a workflow stage using a lineage file as input.
     
@@ -140,6 +163,7 @@ def run_workflow_from_lineage(orchestrator, lineage_file_path: str, stage: str, 
         lineage_file_path: Path to the lineage file
         stage: Target stage to execute
         config: Configuration dictionary
+        keep_runid: Whether to keep the original run ID from the lineage file
         
     Returns:
         Workflow result
@@ -149,7 +173,7 @@ def run_workflow_from_lineage(orchestrator, lineage_file_path: str, stage: str, 
         lineage_data = load_lineage_file(lineage_file_path)
         
         # Prepare context from lineage
-        context = prepare_context_from_lineage(lineage_data, stage, config)
+        context = prepare_context_from_lineage(lineage_data, stage, config, keep_runid)
         
         # Execute workflow starting from specified stage
         result = orchestrator.execute_workflow(

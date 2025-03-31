@@ -278,8 +278,11 @@ class BaseLineage:
         # Create configuration node for hierarchical access
         context_node = create_config_node(context)
         
-        # Generate unique event ID if not provided
-        event_id = context_node.get_value("agent_execution_id") or str(uuid.uuid4())
+        # Generate unique event ID with timestamp prefix if not provided
+        event_id = context_node.get_value("agent_execution_id")
+        if not event_id:
+            # Generate a timestamped event ID
+            event_id = self._generate_timestamped_event_id()
         
         # Extract parent ID in priority order
         parent_id = (
@@ -306,6 +309,27 @@ class BaseLineage:
         path = path + [f"{self.agent_type}:{event_id[:8]}"]
         
         return event_id, parent_id, step, path
+        
+    def _generate_timestamped_event_id(self) -> str:
+        """
+        Generate an event ID with a timestamp prefix for better visual sorting.
+        Format: HHMMSSuuid
+        
+        Returns:
+            Timestamped event ID
+        """
+        # Get current time in 24-hour format with hours, minutes, seconds
+        timestamp = datetime.now().strftime('%H%M%S')
+        # Generate UUID
+        event_uuid = str(uuid.uuid4())
+        # Combine timestamp and UUID
+        timestamped_id = f"{timestamp}-{event_uuid}"
+        
+        logger.debug("lineage.generated_timestamped_event_id", 
+                   timestamp=timestamp, 
+                   event_id=timestamped_id)
+        
+        return timestamped_id
 
     def _write_file_event(self, event: LineageEvent) -> None:
         """Write event to file system with minimal processing"""

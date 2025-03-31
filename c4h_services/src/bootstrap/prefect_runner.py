@@ -112,7 +112,7 @@ def load_configs(app_config_path: Optional[str] = None, system_config_paths: Opt
             raise
         return {}
 
-def execute_workflow_from_lineage(lineage_file_path: str, stage: str, config: Dict[str, Any]) -> Dict[str, Any]:
+def execute_workflow_from_lineage(lineage_file_path: str, stage: str, config: Dict[str, Any], keep_runid: bool = True) -> Dict[str, Any]:
     """
     Run a workflow stage using a lineage file as input.
     
@@ -120,6 +120,7 @@ def execute_workflow_from_lineage(lineage_file_path: str, stage: str, config: Di
         lineage_file_path: Path to the lineage file
         stage: Target stage to execute
         config: Configuration dictionary
+        keep_runid: Whether to keep the original run ID from the lineage file
         
     Returns:
         Workflow result
@@ -128,7 +129,7 @@ def execute_workflow_from_lineage(lineage_file_path: str, stage: str, config: Di
     orchestrator = Orchestrator(config)
     
     # Use the shared utility function
-    return run_workflow_from_lineage(orchestrator, lineage_file_path, stage, config)
+    return run_workflow_from_lineage(orchestrator, lineage_file_path, stage, config, keep_runid)
 
 def run_workflow(project_path: Optional[str], intent_desc: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
     """Run a team-based workflow with the provided configuration"""
@@ -177,7 +178,8 @@ def send_workflow_request(host: str, port: int, project_path: str, intent_desc: 
                           app_config: Optional[Dict[str, Any]] = None,
                           system_config: Optional[Dict[str, Any]] = None,
                           lineage_file: Optional[str] = None,
-                          stage: Optional[str] = None) -> Dict[str, Any]:
+                          stage: Optional[str] = None,
+                          keep_runid: bool = True) -> Dict[str, Any]:
     """
     Send workflow request to server and return the response.
     
@@ -190,6 +192,7 @@ def send_workflow_request(host: str, port: int, project_path: str, intent_desc: 
         system_config: System configuration (optional)
         lineage_file: Path to lineage file (optional)
         stage: Target stage to execute (optional)
+        keep_runid: Whether to keep the original run ID from the lineage file
         
     Returns:
         Response data from the server
@@ -208,6 +211,7 @@ def send_workflow_request(host: str, port: int, project_path: str, intent_desc: 
     if lineage_file and stage:
         request_data["lineage_file"] = lineage_file
         request_data["stage"] = stage
+        request_data["keep_runid"] = keep_runid
     
     # Log request details
     logger.info("client.sending_request",
@@ -217,7 +221,8 @@ def send_workflow_request(host: str, port: int, project_path: str, intent_desc: 
                has_app_config=bool(app_config),
                has_system_config=bool(system_config),
                lineage_file=lineage_file,
-               stage=stage)
+               stage=stage,
+               keep_runid=keep_runid)
     
     # Send request
     try:
@@ -309,6 +314,8 @@ def main():
     # Lineage parameters
     parser.add_argument("--lineage-file", help="Path to lineage file for workflow continuation")
     parser.add_argument("--stage", choices=["discovery", "solution_designer", "coder"], help="Stage to execute from lineage")
+    # Added new parameter for keeping run ID
+    parser.add_argument("--keep-runid", action="store_true", help="Keep original run ID when continuing from lineage file")
     
     # Client parameters
     parser.add_argument("--host", default="localhost", help="Host for client mode")
@@ -377,7 +384,8 @@ def main():
             intent_desc=intent_desc,
             app_config=config,
             lineage_file=args.lineage_file,
-            stage=args.stage
+            stage=args.stage,
+            keep_runid=args.keep_runid  # Pass the keep_runid flag to the API
         )
         
         # Check result and display
@@ -407,7 +415,8 @@ def main():
         result = execute_workflow_from_lineage(
             lineage_file_path=args.lineage_file,
             stage=args.stage,
-            config=config
+            config=config,
+            keep_runid=args.keep_runid  # Pass the keep_runid flag
         )
         
         if result.get("status") != "success":

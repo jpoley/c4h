@@ -20,6 +20,10 @@ class WorkflowRequest(BaseModel):
         default=None, 
         description="Stage to continue workflow from when using lineage file"
     )
+    keep_runid: Optional[bool] = Field(
+        default=True,
+        description="Whether to keep the original run ID from the lineage file (default: True)"
+    )
 
 class WorkflowResponse(BaseModel):
     """

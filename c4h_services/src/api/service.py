@@ -65,7 +65,8 @@ def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
             if request.lineage_file and request.stage:
                 logger.info("workflow.continuing_from_lineage",
                            lineage_file=request.lineage_file,
-                           stage=request.stage)
+                           stage=request.stage,
+                           keep_runid=request.keep_runid)
                            
                 try:
                     # Load lineage data
@@ -81,8 +82,13 @@ def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
                             config['project'] = {}
                         config['project']['path'] = request.project_path
                     
-                    # Prepare context from lineage
-                    context = prepare_context_from_lineage(lineage_data, request.stage, config)
+                    # Prepare context from lineage with keep_runid flag from request
+                    context = prepare_context_from_lineage(
+                        lineage_data, 
+                        request.stage, 
+                        config,
+                        keep_runid=request.keep_runid
+                    )
                     
                     # Get workflow ID
                     workflow_id = context["workflow_run_id"]
