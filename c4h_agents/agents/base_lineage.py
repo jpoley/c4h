@@ -278,12 +278,9 @@ class BaseLineage:
         # Create configuration node for hierarchical access
         context_node = create_config_node(context)
         
-        # Generate unique event ID with timestamp prefix if not provided
-        event_id = context_node.get_value("agent_execution_id")
-        if not event_id:
-            # Generate a timestamped event ID
-            event_id = self._generate_timestamped_event_id()
-        
+        # Generate unique event ID if not provided
+        event_id = context_node.get_value("agent_execution_id") or str(uuid.uuid4())
+            
         # Extract parent ID in priority order
         parent_id = (
             context_node.get_value("parent_id") or  # Explicit parent ID
@@ -309,27 +306,13 @@ class BaseLineage:
         path = path + [f"{self.agent_type}:{event_id[:8]}"]
         
         return event_id, parent_id, step, path
-        
-    def _generate_timestamped_event_id(self) -> str:
-        """
-        Generate an event ID with a timestamp prefix for better visual sorting.
-        Format: HHMMSSuuid
-        
-        Returns:
-            Timestamped event ID
-        """
-        # Get current time in 24-hour format with hours, minutes, seconds
-        timestamp = datetime.now().strftime('%H%M%S')
-        # Generate UUID
-        event_uuid = str(uuid.uuid4())
-        # Combine timestamp and UUID
-        timestamped_id = f"{timestamp}-{event_uuid}"
-        
-        logger.debug("lineage.generated_timestamped_event_id", 
-                   timestamp=timestamp, 
-                   event_id=timestamped_id)
-        
-        return timestamped_id
+
+    """
+    Lineage tracking implementation leveraging existing workflow event storage.
+    Path: c4h_agents/agents/base_lineage.py
+    """
+
+    # Only showing the modified _write_file_event method - all other methods remain unchanged
 
     def _write_file_event(self, event: LineageEvent) -> None:
         """Write event to file system with minimal processing"""
@@ -338,8 +321,13 @@ class BaseLineage:
             
         try:
             events_dir = self.lineage_dir / "events"
-            event_file = events_dir / f"{event.event_id}.json"
-            temp_file = events_dir / f"{event.event_id}.tmp"
+            
+            # Create timestamped filename but keep the original event_id in the content
+            timestamp = datetime.now().strftime('%H%M%S')
+            event_filename = f"{timestamp}_{event.event_id}.json"
+            
+            event_file = events_dir / event_filename
+            temp_file = events_dir / f"tmp_{event_filename}"
             
             # Create clear, complete event structure without duplication
             event_data = {
@@ -381,11 +369,11 @@ class BaseLineage:
                 
         except Exception as e:
             logger.error("lineage.write_failed",
-                         error=str(e),
-                         lineage_dir=str(self.lineage_dir),
-                         agent=event.agent_name,
-                         event_id=event.event_id)
-    
+                        error=str(e),
+                        lineage_dir=str(self.lineage_dir),
+                        agent=event.agent_name,
+                        event_id=event.event_id)
+
     def _emit_marquez_event(self, event: LineageEvent) -> None:
         """Emit event to Marquez"""
         if not OPENLINEAGE_AVAILABLE or not self.client or not self.use_marquez or not self.backends.get("marquez", {}).get("enabled", False):
