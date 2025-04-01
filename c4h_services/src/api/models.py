@@ -3,7 +3,7 @@ API request and response models for workflow service.
 Path: c4h_services/src/api/models.py
 """
 
-from pydantic import BaseModel, Field, root_validator
+from pydantic import BaseModel, Field, model_validator
 from typing import Dict, Any, Optional, List, Literal
 
 class WorkflowRequest(BaseModel):
@@ -87,11 +87,12 @@ class JobRequest(BaseModel):
     team: Optional[TeamConfig] = Field(default=None, description="Team configuration with LLM and orchestration settings")
     runtime: Optional[RuntimeConfig] = Field(default=None, description="Runtime configuration for execution environment")
 
-    @root_validator
-    def validate_structure(cls, values):
+    # Replace @root_validator with @model_validator for Pydantic v2 compatibility
+    @model_validator(mode='after')
+    def validate_structure(self) -> 'JobRequest':
         """Validate the structure of the job request"""
         # Additional validation could be added here if needed
-        return values
+        return self
 
 class JobResponse(BaseModel):
     """Response model for job operations"""
