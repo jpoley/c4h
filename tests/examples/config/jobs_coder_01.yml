@@ -20,9 +20,80 @@ project:
 # Team section - contains LLM and orchestration settings
 team:
   llm_config:
+    providers:
+      anthropic:
+        api_base: "https://api.anthropic.com"
+        context_length: 200000
+        env_var: "ANTHROPIC_API_KEY"
+        default_model: "claude-3-5-sonnet-20241022"
+        valid_models:
+          - "claude-3-7-sonnet-20250219"
+          - "claude-3-5-sonnet-20241022"
+          - "claude-3-5-haiku-20241022"
+          - "claude-3-opus-20240229"
+          - "claude-3-sonnet-20240229"
+          - "claude-3-haiku-20240307"
+        extended_thinking:
+          enabled: false
+          budget_tokens: 32000
+          min_budget_tokens: 1024
+          max_budget_tokens: 128000        
+        litellm_params:
+          retry: true
+          max_retries: 5
+          timeout: 30
+          rate_limit_policy:
+            tokens: 8000
+            requests: 50
+            period: 60
+          backoff:
+            initial_delay: 1
+            max_delay: 30
+            exponential: true
+
+      openai:
+        api_base: "https://api.openai.com/v1"
+        env_var: "OPENAI_API_KEY"
+        default_model: "gpt-4o"
+        valid_models:
+          - "gpt-4o"
+          - "gpt-4o-mini"
+          - "gpt-4"
+          - "gpt-4-turbo"
+          - "o1"
+          - "o1-mini"
+          - "o3-mini"
+        litellm_params:
+          retry: true
+          max_retries: 3
+          timeout: 30
+          rate_limit_policy:
+            tokens: 4000
+            requests: 200
+            period: 60
+          backoff:
+            initial_delay: 1
+            max_delay: 20
+            exponential: true
+
+      gemini:
+        api_base: "https://generativelanguage.googleapis.com/v1beta"
+        context_length: 32000
+        env_var: "GEMINI_API_KEY"
+        default_model: "gemini-2"
+        valid_models:
+          - "gemini-1"
+          - "gemini-1.5"
+          - "gemini-2"
     default_provider: "anthropic"
     default_model: "claude-3-7-sonnet-20250219"
     agents:
+      lineage:
+          enabled: true
+          namespace: "c4h_workflow"
+          backend:
+            type: "file"
+            path: "workspaces/lineage"
       discovery:
         temperature: 0
         tartxt_config:
@@ -106,7 +177,6 @@ team:
             Return only the content without any markup or explanations.
             IMPORTANT do NOT give any other information, only the asked for content
             IF you provide any other information, you will break the processing pipeline
-
       semantic_extract:
         provider: "anthropic"
         model: "claude-3-7-sonnet-20250219"
@@ -132,7 +202,6 @@ team:
             
             Required format:
             {format}
-
       semantic_iterator:
         prompts:
           system: |
@@ -141,7 +210,6 @@ team:
             Your task is to coordinate extraction using the right mode while maintaining result consistency.
             Never modify the extraction instructions or format requirements from the caller.
             Do not add any processing or validation beyond what is specifically requested.
-
       semantic_fast_extractor:
         provider: "anthropic"
         model: "claude-3-7-sonnet-20250219"
@@ -188,7 +256,6 @@ team:
             {format}
 
             CRITICAL: Return raw JSON array of valid file changes only. Do not include any item without a valid file_path.
-
       semantic_slow_extractor:
         provider: "anthropic"
         model: "claude-3-7-sonnet-20250219" 
@@ -371,7 +438,6 @@ team:
             5. Apply changes exactly as specified
             6. Handle errors gracefully with backups
             7. Validate code after changes
-
 
 runtime:
   workflow:
