@@ -78,7 +78,11 @@ llm_config:
       temperature: 0
       backup_enabled: true
 
-logging:
-  level: "INFO"
-  format: "structured"
-  agent_level: "DEBUG"
+  # Logging configuration
+  logging:
+    level: "INFO"
+    format: "structured"
+    agent_level: "DEBUG"
+    truncate:
+      prefix_length: 100
+      suffix_length: 100
