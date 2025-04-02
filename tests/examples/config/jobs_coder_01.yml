@@ -13,9 +13,6 @@ workorder:
       - Add logging configuration
       - Enable lineage tracking for observability
 
-# Add top-level project path for compatibility
-project:
-  path: "./tests/test_projects/"  # Duplicate to ensure it's found during initial parsing
 
 # Team section - contains LLM and orchestration settings
 team:
@@ -481,3 +478,4 @@ runtime:
     truncate:
       prefix_length: 100
       suffix_length: 100
+
