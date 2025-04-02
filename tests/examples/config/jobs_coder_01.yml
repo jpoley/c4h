@@ -373,45 +373,45 @@ team:
             7. Validate code after changes
 
 
-# Runtime section - contains environment configuration
 runtime:
-  # Workflow storage configuration
-  runtime:
-    workflow:
-      storage:
-        enabled: true
-        root_dir: "workspaces/workflows"
-        format: "yymmdd_hhmm_{workflow_id}"
-        retention:
-          max_runs: 10
-          max_days: 30
-        error_handling:
-          ignore_storage_errors: true
-          log_level: "ERROR"
-          
-    # Lineage tracking configuration  
-    lineage:
+  workflow:
+    storage:
       enabled: true
-      namespace: "c4h_workflow"
-      separate_input_output: true
-      backend:
-        type: "file"  # File-based storage is more reliable for initial testing
-        path: "workspaces/lineage"  # Use explicit relative path
+      root_dir: "workspaces/workflows"
+      format: "yymmdd_hhmm_{workflow_id}"
+      retention:
+        max_runs: 10
+        max_days: 30
       error_handling:
-        ignore_failures: true  # Don't let lineage errors affect workflow
+        ignore_storage_errors: true
         log_level: "ERROR"
-      context:
-        include_metrics: true
-        include_token_usage: true
-        record_timestamps: true
+        
+  # Lineage tracking configuration  
+  lineage:
+    enabled: true
+    namespace: "c4h_workflow"
+    separate_input_output: true
+    backend:
+      type: "file"  # File-based storage is more reliable for initial testing
+      path: "workspaces/lineage"  # Use explicit relative path
+    error_handling:
+      ignore_failures: true  # Don't let lineage errors affect workflow
+      log_level: "ERROR"
+    context:
+      include_metrics: true
+      include_token_usage: true
+      record_timestamps: true
 
   # Backup settings  
   backup:
     enabled: true
     path: "./workspaces/backups"  # Use explicit relative path
 
-  # Logging settings
+  # Logging configuration
   logging:
-    level: "DEBUG"
+    level: "INFO"
     format: "structured"
     agent_level: "DEBUG"
+    truncate:
+      prefix_length: 100
+      suffix_length: 100
