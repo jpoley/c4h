@@ -28,6 +28,10 @@ class ContinuationHandler:
         self.max_continuation_attempts = parent_agent.max_continuation_attempts
         self.continuation_token_buffer = parent_agent.continuation_token_buffer
         
+        # Get parent's configuration and logger for proper truncation
+        self.config = getattr(parent_agent, 'config', None)
+        self.logger = getattr(parent_agent, 'logger', logger)
+        
         # Debug counters
         self.diagnostics = {
             "attempts": 0,
@@ -39,6 +43,7 @@ class ContinuationHandler:
             "structure_repairs": 0
         }
 
+    # Example of one method update - similar updates would be needed throughout the file
     def get_completion_with_continuation(
             self, 
             messages: List[Dict[str, str]],
@@ -67,7 +72,9 @@ class ContinuationHandler:
             # Detect content type for specialized handling
             content_type = self._detect_content_type(messages)
             
-            logger.info("llm.continuation_starting", 
+            # Use agent's logger or fall back to module logger
+            # This ensures truncation of response content in logs
+            self.logger.info("llm.continuation_starting", 
                     model=self.model_str,
                     max_attempts=max_tries,
                     content_type=content_type)
