@@ -437,18 +437,6 @@ team:
             7. Validate code after changes
 
 runtime:
-  workflow:
-    storage:
-      enabled: true
-      root_dir: "workspaces/workflows"
-      format: "yymmdd_hhmm_{workflow_id}"
-      retention:
-        max_runs: 10
-        max_days: 30
-      error_handling:
-        ignore_storage_errors: true
-        log_level: "ERROR"
-        
   # Lineage tracking configuration  
   lineage:
     enabled: true
@@ -476,6 +464,6 @@ runtime:
     format: "structured"
     agent_level: "DEBUG"
     truncate:
-      prefix_length: 100
-      suffix_length: 100
+      prefix_length: 10
+      suffix_length: 10
 

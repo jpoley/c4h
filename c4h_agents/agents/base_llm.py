@@ -71,7 +71,11 @@ class BaseLLM:
             
             # Debug logging for response processing
             if self._should_log(LogDetail.DEBUG):
-                logger.debug("agent.processing_response",
+                # Use self.config for logging if available - ensures proper truncation
+                config_to_use = getattr(self, 'config', None)
+                logger_to_use = getattr(self, 'logger', logger)
+                
+                logger_to_use.debug("agent.processing_response",
                             content_length=len(str(processed_content)) if processed_content else 0,
                             response_type=type(raw_response).__name__,
                             continuation_attempts=self.metrics["continuation_attempts"])
