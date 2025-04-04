@@ -243,28 +243,27 @@ llm_config:
           8. Every string must use double quotes
           9. No comments or trailing commas allowed
           10. Do not extract metadata as separate files - only extract actual file changes
-
         extract: |
           Extract all code change objects from the input.
           
           Content to analyze:
           {content}
 
-          Each change MUST include ALL of these required fields:
-          1. file_path: Path of the file to modify - THIS MUST BE A NON-EMPTY STRING
-          2. type: One of "modify", "create", or "delete"
-          3. content: The complete new content (if available)
-          4. diff: Git-style diff (if content not available)
-          5. description: Clear description of the change
+          FLATMAP OPERATION RULES:
+          1. Parse the nested structure completely, finding all objects in the "changes" array
+          2. Extract ONLY the individual change objects and place them in a flat array
+          3. Each object must have: file_path, type, description, and diff fields
+          4. Return ONE JSON array starting with [ and ending with ]
+          5. Your response must contain EXACTLY ONE opening bracket and ONE closing bracket
+          6. NO text or objects before, after, or between arrays
+          7. NO duplicate objects in the final array
 
-          VALIDATION RULES:
-          - SKIP any object that doesn't have a valid file_path
-          - DO NOT extract metadata as separate files
-          - ONLY extract actual file changes
-          - ONLY extract items that represent code or content files
-          - DO NOT add ANY explanation text before or after the JSON array
-          - DO NOT add ANY comments after the closing bracket
-          - NEVER include trailing content after the JSON array's closing bracket
+          DO NOT:
+          - Create multiple arrays
+          - Include explanatory text
+          - Nest objects within other objects
+          - Repeat objects you've already extracted
+          - Add anything after the closing bracket
           
           Input instruction:
           {instruction}
@@ -272,40 +271,39 @@ llm_config:
           Required format:
           {format}
 
-          CRITICAL: Your entire response must be ONLY a valid JSON array starting with [ and ending with ]. Nothing else.
-          CRITICAL: Every string must use double quotes
-          CRITICAL: No comments or trailing commas allowed     
-
     semantic_slow_extractor:
-      provider: "anthropic"
-      model: "claude-3-7-sonnet-20250219" 
+      provider: "openai"
+      model: "o3-mini"
       temperature: 0
       prompts:
         system: |
           You are a precise sequential extraction agent for extracting object of information.
-          Your role is to extract exactly one object of information as described what a block is,
-          at position N, or signal completion.
+          Your role is to extract exactly one object from a nested structure at position N.
           Rules:
           1. Extract ONLY the Nth object that hasn't been returned before
-          2. Return NO_MORE_ITEMS if:
-            - No more unprocessed blocks exist
-            - Current position exceeds available blocks
-            - objects at current position was previously returned
-          3. Each object MUST be unique 
-          4. Follow exact format for single object response
-          5. Maintain strict sequential order of original object
+          2. Return NO_MORE_ITEMS if no more objects exist or position exceeds available items
+          3. Each extracted object MUST be unique and complete
+          4. Follow exact format for response with no additional text
+          5. Handle nested structures properly - extract from within arrays or objects
         extract: |
-          Extract the {ordinal} object from the input.
+          Extract the {ordinal} change object from the input.
           
           Content to analyze:
           {content}
           
-          Extract as a single object if the information exists, otherwise blank:
-          1. file_path: Path of the file to modify
+          NAVIGATION RULES:
+          1. Look for objects within the "changes" array in the nested structure
+          2. Extract EXACTLY the {ordinal} object in sequence
+          3. Return the complete object with ALL required fields
+          4. Return NO_MORE_ITEMS if:
+            - {ordinal} exceeds number of objects
+            - All objects have already been extracted
+          
+          The object MUST contain:
+          1. file_path: Path of the file to modify (non-empty string)
           2. type: One of "modify", "create", or "delete"  
-          3. content: The complete new content (if available)
-          4. diff: Git-style diff (if content not available)
-          5. description: Clear description of the change
+          3. diff: Git-style diff content
+          4. description: Clear change description
           
           Input instruction:
           {instruction}
@@ -313,7 +311,7 @@ llm_config:
           Required format:
           {format}
           
-          CRITICAL RULES:
+          CRITICAL: Return ONLY the single extracted object without array brackets or ANY additional text.
           1. Extract EXACTLY the {ordinal} object in sequence order
           2. Return NO_MORE_ITEMS if:
             - {ordinal} exceeds number of objects
