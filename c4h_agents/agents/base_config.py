@@ -100,43 +100,53 @@ class BaseConfig:
                     config_keys=list(lineage_config.keys()))
         return lineage_config
 
+    """
+    Update the _get_provider_config method to fix the rate limit handling.
+    Remove unsupported rate_limit_policy parameter.
+    """
 
-    # Update the _get_provider_config method to enhance retry configuration
     def _get_provider_config(self, provider: LLMProvider) -> Dict[str, Any]:
-        """Get provider-specific configuration with enhanced rate limit handling"""
+        """Get provider-specific configuration with correct retry handling"""
         try:
             provider_node = self.config_node.get_node(f"llm_config.providers.{provider.value}")
             provider_config = provider_node.data or {}
             
             # Handle default retry configuration
             litellm_params = provider_config.get("litellm_params", {})
-            if "retry" not in litellm_params:
-                litellm_params.update({
-                    "retry": True,
-                    "max_retries": 5,  # Increased from 3
-                    "backoff": {
-                        "initial_delay": 2,  # Increased from 1
-                        "max_delay": 60,     # Increased from 30
-                        "exponential": True
-                    }
-                })
-                
-                # Add specific handling for rate limits
-                if "rate_limits" not in litellm_params:
-                    litellm_params["rate_limits"] = {
-                        "handles": ["RateLimitError"],
-                        "max_retries": 6,
-                        "backoff_factor": 2.0
-                    }
-                    
+            if not litellm_params:
+                litellm_params = {}
                 provider_config["litellm_params"] = litellm_params
                 
+            # Set retry configuration if not already configured
+            if "retry" not in litellm_params:
+                litellm_params["retry"] = True
+                
+            if "max_retries" not in litellm_params:
+                litellm_params["max_retries"] = 5  # Increased from 3
+                
+            # Ensure backoff configuration exists
+            if "backoff" not in litellm_params:
+                litellm_params["backoff"] = {
+                    "initial_delay": 2,  # Increased from 1
+                    "max_delay": 60,     # Increased from 30
+                    "exponential": True
+                }
+            
+            # IMPORTANT: Remove rate_limits or rate_limit_policy if present
+            # These are not supported by Anthropic's API
+            if "rate_limits" in litellm_params:
+                del litellm_params["rate_limits"]
+                
+            if "rate_limit_policy" in litellm_params:
+                del litellm_params["rate_limit_policy"]
+            
+            # Log all changes
             if self._should_log(LogDetail.DEBUG):
                 logger.debug("provider.config_loaded", 
                             provider=str(provider), 
                             retry_config=litellm_params.get("retry"), 
                             max_retries=litellm_params.get("max_retries"),
-                            rate_limit_handling=litellm_params.get("rate_limits", {}).get("max_retries"))
+                            backoff=litellm_params.get("backoff"))
                             
             return provider_config
         except Exception as e:

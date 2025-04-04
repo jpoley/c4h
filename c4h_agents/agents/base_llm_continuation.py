@@ -1,5 +1,5 @@
 """
-Enhanced LLM response continuation handling with detailed logging.
+Enhanced LLM response continuation handling with detailed logging and rate limit handling.
 Path: c4h_agents/agents/base_llm_continuation.py
 """
 
@@ -48,6 +48,9 @@ class ContinuationHandler:
         self.rate_limit_retry_base_delay = 2.0  # Base delay in seconds
         self.rate_limit_max_retries = 5  # Maximum number of rate limit retries
         self.rate_limit_max_backoff = 60  # Maximum backoff in seconds
+        
+        # Position tracking for request configuration
+        self._position = 0  # Current continuation position
 
     def get_completion_with_continuation(
             self, 
@@ -97,6 +100,9 @@ class ContinuationHandler:
                 overlap_context = None
                 overlap_lines = []
                 
+                # Update position counter for the retry configuration
+                self._position = attempt
+                
                 if attempt > 0:
                     self.diagnostics["attempts"] += 1
                     
@@ -125,18 +131,18 @@ class ContinuationHandler:
                 
                 # Log the request details
                 logger.info("llm.continuation_request", 
-                          attempt=attempt,
-                          request_id=request_id,
-                          message_count=len(current_messages))
-                          
+                        attempt=attempt,
+                        request_id=request_id,
+                        message_count=len(current_messages))
+                        
                 # Detailed logging of the messages
                 for i, msg in enumerate(current_messages):
                     role = msg.get("role", "unknown")
                     content = msg.get("content", "")
                     logger.debug(f"llm.continuation_message_{i}", 
-                               role=role, 
-                               content_length=len(content),
-                               content_preview=content[:200] + "..." if len(content) > 200 else content)
+                            role=role, 
+                            content_length=len(content),
+                            content_preview=content[:200] + "..." if len(content) > 200 else content)
                 
                 request_params = completion_params.copy()
                 request_params["messages"] = current_messages
@@ -154,12 +160,12 @@ class ContinuationHandler:
                     
                     # Log the raw response for analysis
                     logger.debug("llm.continuation_raw_response", 
-                               request_id=request_id,
-                               attempt=attempt,
-                               response_type=type(response).__name__,
-                               has_choices=hasattr(response, 'choices'),
-                               choices_count=len(response.choices) if hasattr(response, 'choices') else 0,
-                               first_choice=str(response.choices[0])[:500] + "..." if hasattr(response, 'choices') and response.choices else None)
+                            request_id=request_id,
+                            attempt=attempt,
+                            response_type=type(response).__name__,
+                            has_choices=hasattr(response, 'choices'),
+                            choices_count=len(response.choices) if hasattr(response, 'choices') else 0,
+                            first_choice=str(response.choices[0])[:500] + "..." if hasattr(response, 'choices') and response.choices else None)
 
                     if not hasattr(response, 'choices') or not response.choices:
                         logger.error("llm.no_response",
@@ -176,11 +182,11 @@ class ContinuationHandler:
                     
                     # Log the response details
                     logger.info("llm.continuation_response", 
-                              request_id=request_id,
-                              attempt=attempt,
-                              finish_reason=finish_reason,
-                              content_length=content_length,
-                              request_duration_seconds=request_duration)
+                            request_id=request_id,
+                            attempt=attempt,
+                            finish_reason=finish_reason,
+                            content_length=content_length,
+                            request_duration_seconds=request_duration)
                     
                     # Process response through standard interface
                     result = self.parent._process_response(response, response)
@@ -209,30 +215,30 @@ class ContinuationHandler:
                         
                         # First, look for explicit markers
                         logger.debug("llm.checking_for_markers", 
-                                   request_id=request_id,
-                                   attempt=attempt,
-                                   begin_marker_present=begin_marker in current_content,
-                                   end_marker_present=end_marker in current_content)
-                                   
+                                request_id=request_id,
+                                attempt=attempt,
+                                begin_marker_present=begin_marker in current_content,
+                                end_marker_present=end_marker in current_content)
+                                
                         cleaned_content = self._clean_overlap_markers(current_content, begin_marker, end_marker)
                         
                         # If markers found and properly cleaned, use the cleaned content
                         if cleaned_content != current_content:
                             logger.info("llm.markers_found_and_cleaned",
-                                      request_id=request_id,
-                                      attempt=attempt,
-                                      original_length=len(current_content),
-                                      cleaned_length=len(cleaned_content))
-                                      
+                                    request_id=request_id,
+                                    attempt=attempt,
+                                    original_length=len(current_content),
+                                    cleaned_length=len(cleaned_content))
+                                    
                             current_content = cleaned_content
                             self.diagnostics["exact_matches"] += 1
                             # Update the accumulated content
                             accumulated_content = accumulated_content + "\n" + current_content
                         else:
                             logger.info("llm.no_markers_trying_overlap",
-                                      request_id=request_id,
-                                      attempt=attempt)
-                                      
+                                    request_id=request_id,
+                                    attempt=attempt)
+                                    
                             # Try multi-level matching and log details of each strategy
                             joined_content, match_method, join_details = self._join_with_overlap(
                                 accumulated_content, 
@@ -250,35 +256,35 @@ class ContinuationHandler:
                             self._update_match_metrics(match_method)
                             
                             logger.debug("llm.joined_content_updated",
-                                       request_id=request_id,
-                                       attempt=attempt,
-                                       match_method=match_method,
-                                       joined_length=len(joined_content))
+                                    request_id=request_id,
+                                    attempt=attempt,
+                                    match_method=match_method,
+                                    joined_length=len(joined_content))
                     else:
                         # First response, just use it directly
                         accumulated_content = current_content
                         
                         logger.debug("llm.initial_content_stored",
-                                   request_id=request_id,
-                                   content_length=len(accumulated_content))
+                                request_id=request_id,
+                                content_length=len(accumulated_content))
                     
                     # Check if we need to continue
                     finish_reason = getattr(response.choices[0], 'finish_reason', None)
                     
                     if finish_reason == 'length':
                         logger.info("llm.length_limit_reached", 
-                                  request_id=request_id,
-                                  attempt=attempt,
-                                  accumulated_length=len(accumulated_content))
+                                request_id=request_id,
+                                attempt=attempt,
+                                accumulated_length=len(accumulated_content))
                         
                         attempt += 1
                         continue
                     else:
                         logger.info("llm.completion_finished",
-                                  request_id=request_id,
-                                  finish_reason=finish_reason,
-                                  continuation_count=attempt,
-                                  final_length=len(accumulated_content))
+                                request_id=request_id,
+                                finish_reason=finish_reason,
+                                continuation_count=attempt,
+                                final_length=len(accumulated_content))
                         
                         break
 
@@ -290,20 +296,20 @@ class ContinuationHandler:
                     
                     if rate_limit_retries > self.rate_limit_max_retries:
                         logger.error("llm.rate_limit_max_retries_exceeded", 
-                                  retry_count=rate_limit_retries,
-                                  error=error_msg)
+                                retry_count=rate_limit_retries,
+                                error=error_msg[:200])
                         raise  # Re-raise if we've tried too many times
-                                  
+                                
                     # Calculate backoff with jitter
                     jitter = 0.1 * rate_limit_backoff * (0.5 - random.random())
                     current_backoff = min(rate_limit_backoff + jitter, self.rate_limit_max_backoff)
                     
                     logger.warning("llm.rate_limit_backoff", 
-                                 request_id=request_id,
-                                 attempt=attempt,
-                                 retry_count=rate_limit_retries,
-                                 backoff_seconds=current_backoff,
-                                 error=error_msg[:200])
+                                request_id=request_id,
+                                attempt=attempt,
+                                retry_count=rate_limit_retries,
+                                backoff_seconds=current_backoff,
+                                error=error_msg[:200])
                     
                     # Apply exponential backoff with base 2
                     time.sleep(current_backoff)
@@ -317,10 +323,10 @@ class ContinuationHandler:
                     error_msg = str(e)
                     
                     logger.warning("llm.server_error", 
-                                 request_id=request_id,
-                                 attempt=attempt,
-                                 retry_count=retry_count,
-                                 error=error_msg)
+                                request_id=request_id,
+                                attempt=attempt,
+                                retry_count=retry_count,
+                                error=error_msg)
                     
                     self._handle_litellm_error(e, retry_count)
                     retry_count += 1
@@ -331,10 +337,10 @@ class ContinuationHandler:
                     error_type = type(e).__name__
                     
                     logger.error("llm.request_failed", 
-                               request_id=request_id,
-                               error=error_msg,
-                               error_type=error_type,
-                               attempt=attempt)
+                            request_id=request_id,
+                            error=error_msg,
+                            error_type=error_type,
+                            attempt=attempt)
                     
                     raise
 
@@ -345,6 +351,16 @@ class ContinuationHandler:
                         model=self.model_str, 
                         total_length=len(accumulated_content),
                         diagnostics=self.diagnostics)
+
+            # Apply syntax cleaning as a final step for code content
+            if content_type in ["code", "json_code"] and attempt > 0:
+                original_length = len(accumulated_content)
+                accumulated_content = self._clean_continuation_artifacts(accumulated_content, content_type)
+                
+                if len(accumulated_content) != original_length:
+                    logger.info("llm.syntax_artifacts_cleaned",
+                            content_type=content_type,
+                            continuation_count=attempt)
 
             # Update the content in the final response
             if final_response and hasattr(final_response, 'choices') and final_response.choices:
@@ -359,8 +375,8 @@ class ContinuationHandler:
             error_type = type(e).__name__
             
             logger.error("llm.continuation_failed", 
-                       error=error_msg, 
-                       error_type=error_type)
+                    error=error_msg, 
+                    error_type=error_type)
             
             raise
 
@@ -426,13 +442,11 @@ class ContinuationHandler:
             completion_params["api_base"] = provider_config["api_base"]
                 
         return completion_params
-        
-    # Path: c4h_agents/agents/base_llm_continuation.py
 
     def _make_llm_request(self, completion_params: Dict[str, Any]) -> Any:
         """
-        Make the actual LLM request with enhanced error handling for rate limits.
-        Uses LiteLLM's built-in retry mechanism along with additional handling.
+        Make the actual LLM request with rate limit handling.
+        Ensures no unsupported parameters are passed to the API.
         
         Args:
             completion_params: Complete parameters for the LLM request
@@ -441,37 +455,46 @@ class ContinuationHandler:
             LLM response object
         """
         try:
-            # Ensure the provider config includes retry settings
+            # Get provider config but don't add unsupported parameters
             provider_config = self.parent._get_provider_config(self.provider)
-            litellm_params = provider_config.get("litellm_params", {})
             
-            # Merge litellm parameters into completion params
-            for key, value in litellm_params.items():
-                if key not in completion_params and key not in ["retry", "max_retries", "backoff", "rate_limits"]:
-                    completion_params[key] = value
+            # Ensure retry is enabled in litellm itself
+            litellm.retry = True
             
-            # Ensure retry is enabled
-            completion_params["retry"] = True
-            
-            # Adjust retry configuration for continuations which are more sensitive to rate limits
-            # Use higher retry counts for continuations vs initial requests
-            if self._position > 0:
-                completion_params["max_retries"] = 5
+            # Set appropriate retry count based on position
+            position = getattr(self, '_position', 0)
+            if position > 0:
+                litellm.max_retries = 5
             else:
-                completion_params["max_retries"] = 3
+                litellm.max_retries = 3
+            
+            # Configure backoff settings
+            litellm.retry_wait = 2
+            litellm.max_retry_wait = 60
+            litellm.retry_exponential = True
                 
-            # Make the actual request
-            logger.debug("llm.making_request_with_retry", 
-                    retry_enabled=completion_params.get("retry", True),
-                    max_retries=completion_params.get("max_retries", 3))
+            # Make the actual request, but ensure we don't pass unsupported params
+            # Only pass standard, known parameters to the completion API
+            safe_params = {
+                k: v for k, v in completion_params.items() 
+                if k in ['model', 'messages', 'temperature', 'max_tokens', 'top_p', 'stream']
+            }
+            
+            # Add api_base if it's in the provider config
+            if "api_base" in provider_config:
+                safe_params["api_base"] = provider_config["api_base"]
+                
+            logger.debug("llm.making_request", 
+                    retry_enabled=litellm.retry,
+                    max_retries=litellm.max_retries,
+                    params=list(safe_params.keys()))
                     
-            response = completion(**completion_params)
+            response = completion(**safe_params)
             return response
             
         except litellm.RateLimitError as e:
-            # LiteLLM should handle retries internally, but if we still get here,
-            # log the error and re-raise for our custom handler to manage
-            logger.warning("llm.rate_limit_after_built_in_retry", 
+            # Log and re-raise for our custom handler to manage
+            logger.warning("llm.rate_limit_error", 
                         error=str(e)[:200])
             raise
             
@@ -479,7 +502,6 @@ class ContinuationHandler:
             # For other errors, just log and re-raise
             logger.error("llm.request_error", error=str(e))
             raise
-
         
     def _handle_litellm_error(self, error: Exception, retry_count: int) -> None:
         """Handle LiteLLM errors with appropriate retry logic"""
@@ -516,13 +538,31 @@ class ContinuationHandler:
             self.diagnostics["fallbacks"] += 1
 
     def _prepare_overlap_context(self, accumulated_content: str, content_type: str) -> Tuple[List[str], str]:
-        """Calculate appropriate overlap based on content type"""
+        """Calculate appropriate overlap based on content type with string detection"""
         content_lines = accumulated_content.splitlines()
         
         # Adaptive overlap size based on content length and type
         if content_type in ["code", "json_code"]:
             # For code, use more lines to ensure complete syntactic blocks
-            overlap_size = min(max(5, min(len(content_lines) // 3, 15)), len(content_lines))
+            base_overlap = min(max(5, min(len(content_lines) // 3, 15)), len(content_lines))
+            overlap_size = base_overlap
+            
+            # Check last few lines for string continuation patterns
+            check_lines = min(5, len(content_lines))
+            for i in range(1, check_lines + 1):
+                if len(content_lines) >= i:
+                    line = content_lines[-i]
+                    # Check for incomplete string patterns (f-strings, quotes, etc.)
+                    if (('"' in line or "'" in line) and (line.count('"') % 2 != 0 or line.count("'") % 2 != 0)) or \
+                    (any(pattern in line for pattern in ["f\"", "f'", "r\"", "r'", "'''", '"""']) and 
+                        not any(line.rstrip().endswith(end) for end in ['"', "'", '"""', "'''"])):
+                        # Increase overlap to capture the entire string construct
+                        overlap_size = min(max(15, min(len(content_lines) // 2, 30)), len(content_lines))
+                        logger.debug("llm.string_construct_detected", 
+                                line_content=line,
+                                increasing_overlap=True, 
+                                overlap_size=overlap_size)
+                        break
         elif content_type in ["json", "diff"]:
             # For JSON/diff, try to include complete objects or chunks
             overlap_size = min(max(8, min(len(content_lines) // 3, 20)), len(content_lines))
@@ -534,9 +574,9 @@ class ContinuationHandler:
         overlap_context = "\n".join(last_lines)
         
         logger.debug("llm.overlap_context_created", 
-                   content_type=content_type,
-                   total_lines=len(content_lines),
-                   overlap_lines=overlap_size)
+                content_type=content_type,
+                total_lines=len(content_lines),
+                overlap_lines=overlap_size)
         
         return last_lines, overlap_context
 
@@ -647,6 +687,40 @@ class ContinuationHandler:
                      content_length=len(content))
         
         return content
+    
+    def _clean_continuation_artifacts(self, content: str, content_type: str) -> str:
+        """Fix common syntax issues at continuation boundaries"""
+        if content_type not in ["code", "json_code"]:
+            return content
+            
+        # Common Python syntax patterns that get broken across chunks
+        fixes = [
+            # Fix f-strings split across chunks
+            (r'(\w+)=f\s*\n\s*"', r'\1=f"'),
+            (r'(\w+)=f\s*\n\s*\'', r'\1=f\''),
+            
+            # Fix regular strings split across chunks
+            (r'(\w+)="\s*\n\s*', r'\1="'),
+            (r'(\w+)=\'\s*\n\s*', r'\1=\''),
+            
+            # Fix string concatenation with + operator
+            (r'"\s*\+\s*\n\s*"', r'" + "'),
+            (r'\'\s*\+\s*\n\s*\'', r'\' + \''),
+            
+            # Fix parentheses/brackets split across chunks
+            (r'\(\s*\n\s*', r'('),
+            (r'\[\s*\n\s*', r'['),
+            (r'\{\s*\n\s*', r'{'),
+            (r'\s*\n\s*\)', r')'),
+            (r'\s*\n\s*\]', r']'),
+            (r'\s*\n\s*\}', r'}')
+        ]
+        
+        # Apply all fixes
+        for pattern, replacement in fixes:
+            content = re.sub(pattern, replacement, content)
+        
+        return content    
 
     def _join_with_overlap(self, previous: str, current: str, 
                          overlap_lines: List[str], content_type: str, 
