@@ -100,8 +100,10 @@ class BaseConfig:
                     config_keys=list(lineage_config.keys()))
         return lineage_config
 
+
+    # Update the _get_provider_config method to enhance retry configuration
     def _get_provider_config(self, provider: LLMProvider) -> Dict[str, Any]:
-        """Get provider-specific configuration"""
+        """Get provider-specific configuration with enhanced rate limit handling"""
         try:
             provider_node = self.config_node.get_node(f"llm_config.providers.{provider.value}")
             provider_config = provider_node.data or {}
@@ -111,20 +113,30 @@ class BaseConfig:
             if "retry" not in litellm_params:
                 litellm_params.update({
                     "retry": True,
-                    "max_retries": 3,
+                    "max_retries": 5,  # Increased from 3
                     "backoff": {
-                        "initial_delay": 1,
-                        "max_delay": 30,
+                        "initial_delay": 2,  # Increased from 1
+                        "max_delay": 60,     # Increased from 30
                         "exponential": True
                     }
                 })
+                
+                # Add specific handling for rate limits
+                if "rate_limits" not in litellm_params:
+                    litellm_params["rate_limits"] = {
+                        "handles": ["RateLimitError"],
+                        "max_retries": 6,
+                        "backoff_factor": 2.0
+                    }
+                    
                 provider_config["litellm_params"] = litellm_params
                 
             if self._should_log(LogDetail.DEBUG):
                 logger.debug("provider.config_loaded", 
                             provider=str(provider), 
                             retry_config=litellm_params.get("retry"), 
-                            max_retries=litellm_params.get("max_retries"))
+                            max_retries=litellm_params.get("max_retries"),
+                            rate_limit_handling=litellm_params.get("rate_limits", {}).get("max_retries"))
                             
             return provider_config
         except Exception as e:

@@ -8,6 +8,7 @@ import time
 import re
 import json
 import hashlib
+import random
 from datetime import datetime
 import litellm
 from litellm import completion
@@ -42,6 +43,11 @@ class ContinuationHandler:
             "fallbacks": 0,
             "structure_repairs": 0
         }
+        
+        # Rate limit handling
+        self.rate_limit_retry_base_delay = 2.0  # Base delay in seconds
+        self.rate_limit_max_retries = 5  # Maximum number of rate limit retries
+        self.rate_limit_max_backoff = 60  # Maximum backoff in seconds
 
     def get_completion_with_continuation(
             self, 
@@ -51,7 +57,7 @@ class ContinuationHandler:
         """
         Get completion with automatic continuation handling.
         Uses multi-level overlap detection for reliable response joining.
-        Handles overload conditions with exponential backoff.
+        Handles overload conditions and rate limits with exponential backoff.
         
         Args:
             messages: List of message dictionaries with role and content
@@ -67,6 +73,10 @@ class ContinuationHandler:
             final_response = None
             retry_count = 0
             max_retries = 5  # Max retries for overload conditions
+            
+            # Rate limit handling
+            rate_limit_retries = 0
+            rate_limit_backoff = self.rate_limit_retry_base_delay
             
             # Detect content type for specialized handling
             content_type = self._detect_content_type(messages)
@@ -139,6 +149,8 @@ class ContinuationHandler:
 
                     # Reset retry count on successful completion
                     retry_count = 0
+                    rate_limit_retries = 0  # Reset rate limit retries as well
+                    rate_limit_backoff = self.rate_limit_retry_base_delay
                     
                     # Log the raw response for analysis
                     logger.debug("llm.continuation_raw_response", 
@@ -270,6 +282,36 @@ class ContinuationHandler:
                         
                         break
 
+                except litellm.RateLimitError as e:
+                    # Handle rate limit errors with exponential backoff
+                    error_msg = str(e)
+                    
+                    rate_limit_retries += 1
+                    
+                    if rate_limit_retries > self.rate_limit_max_retries:
+                        logger.error("llm.rate_limit_max_retries_exceeded", 
+                                  retry_count=rate_limit_retries,
+                                  error=error_msg)
+                        raise  # Re-raise if we've tried too many times
+                                  
+                    # Calculate backoff with jitter
+                    jitter = 0.1 * rate_limit_backoff * (0.5 - random.random())
+                    current_backoff = min(rate_limit_backoff + jitter, self.rate_limit_max_backoff)
+                    
+                    logger.warning("llm.rate_limit_backoff", 
+                                 request_id=request_id,
+                                 attempt=attempt,
+                                 retry_count=rate_limit_retries,
+                                 backoff_seconds=current_backoff,
+                                 error=error_msg[:200])
+                    
+                    # Apply exponential backoff with base 2
+                    time.sleep(current_backoff)
+                    rate_limit_backoff = min(rate_limit_backoff * 2, self.rate_limit_max_backoff)
+                    
+                    # Don't increment the attempt counter since we'll retry with the same content
+                    continue
+                    
                 except litellm.InternalServerError as e:
                     # Handle overload errors with exponential backoff
                     error_msg = str(e)
@@ -385,10 +427,59 @@ class ContinuationHandler:
                 
         return completion_params
         
+    # Path: c4h_agents/agents/base_llm_continuation.py
+
     def _make_llm_request(self, completion_params: Dict[str, Any]) -> Any:
-        """Make the actual LLM request with error handling"""
-        response = completion(**completion_params)
-        return response
+        """
+        Make the actual LLM request with enhanced error handling for rate limits.
+        Uses LiteLLM's built-in retry mechanism along with additional handling.
+        
+        Args:
+            completion_params: Complete parameters for the LLM request
+            
+        Returns:
+            LLM response object
+        """
+        try:
+            # Ensure the provider config includes retry settings
+            provider_config = self.parent._get_provider_config(self.provider)
+            litellm_params = provider_config.get("litellm_params", {})
+            
+            # Merge litellm parameters into completion params
+            for key, value in litellm_params.items():
+                if key not in completion_params and key not in ["retry", "max_retries", "backoff", "rate_limits"]:
+                    completion_params[key] = value
+            
+            # Ensure retry is enabled
+            completion_params["retry"] = True
+            
+            # Adjust retry configuration for continuations which are more sensitive to rate limits
+            # Use higher retry counts for continuations vs initial requests
+            if self._position > 0:
+                completion_params["max_retries"] = 5
+            else:
+                completion_params["max_retries"] = 3
+                
+            # Make the actual request
+            logger.debug("llm.making_request_with_retry", 
+                    retry_enabled=completion_params.get("retry", True),
+                    max_retries=completion_params.get("max_retries", 3))
+                    
+            response = completion(**completion_params)
+            return response
+            
+        except litellm.RateLimitError as e:
+            # LiteLLM should handle retries internally, but if we still get here,
+            # log the error and re-raise for our custom handler to manage
+            logger.warning("llm.rate_limit_after_built_in_retry", 
+                        error=str(e)[:200])
+            raise
+            
+        except Exception as e:
+            # For other errors, just log and re-raise
+            logger.error("llm.request_error", error=str(e))
+            raise
+
         
     def _handle_litellm_error(self, error: Exception, retry_count: int) -> None:
         """Handle LiteLLM errors with appropriate retry logic"""
