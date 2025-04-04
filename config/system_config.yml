@@ -262,14 +262,19 @@ llm_config:
           - DO NOT extract metadata as separate files
           - ONLY extract actual file changes
           - ONLY extract items that represent code or content files
-
+          - DO NOT add ANY explanation text before or after the JSON array
+          - DO NOT add ANY comments after the closing bracket
+          - NEVER include trailing content after the JSON array's closing bracket
+          
           Input instruction:
           {instruction}
 
           Required format:
           {format}
 
-          CRITICAL: Return raw JSON array of valid file changes only. Do not include any item without a valid file_path.
+          CRITICAL: Your entire response must be ONLY a valid JSON array starting with [ and ending with ]. Nothing else.
+          CRITICAL: Every string must use double quotes
+          CRITICAL: No comments or trailing commas allowed     
 
     semantic_slow_extractor:
       provider: "anthropic"

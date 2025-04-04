@@ -383,17 +383,13 @@ def poll_job_status(host: str, port: int, job_id: str, poll_interval: int = 5, m
     """Poll job status until completion or timeout."""
     return poll_status(host, port, "jobs", job_id, poll_interval, max_polls)
 
-def build_job_config(config_path: Optional[str], project_path: Optional[str], intent_file: Optional[str]) -> Dict[str, Any]:
+# Path: c4h_services/src/bootstrap/prefect_runner.py
+
+def build_job_config(config_path: Optional[str], project_path: Optional[str], 
+                    intent_file: Optional[str], lineage_file: Optional[str] = None, 
+                    stage: Optional[str] = None, keep_runid: bool = True) -> Dict[str, Any]:
     """
-    Build job configuration from config file, project path, and intent file.
-    
-    Args:
-        config_path: Path to config file (optional)
-        project_path: Path to project (optional if in config)
-        intent_file: Path to intent file (optional if in config)
-        
-    Returns:
-        Job configuration dictionary
+    Build job configuration from config file, project path, intent file, and lineage parameters.
     """
     # Load the base config
     job_config = {}
@@ -468,6 +464,23 @@ def build_job_config(config_path: Optional[str], project_path: Optional[str], in
         # Move backup config to runtime section
         if 'backup' in job_config:
             job_config['runtime']['backup'] = job_config['backup']
+    
+    # Add lineage information if provided
+    if lineage_file or stage:
+        # Ensure runtime.runtime exists
+        if 'runtime' not in job_config:
+            job_config['runtime'] = {}
+        if 'runtime' not in job_config['runtime']:
+            job_config['runtime']['runtime'] = {}
+        
+        # Add lineage parameters
+        if lineage_file:
+            job_config['runtime']['runtime']['lineage_file'] = lineage_file
+        if stage:
+            job_config['runtime']['runtime']['stage'] = stage
+        # Only add keep_runid if it's explicitly set to False (since True is default)
+        if not keep_runid:
+            job_config['runtime']['runtime']['keep_runid'] = keep_runid
     
     # Validate job config has required sections
     if 'workorder' not in job_config:
@@ -550,7 +563,14 @@ def handle_jobs_mode(args: argparse.Namespace) -> None:
     """Handle jobs mode for jobs API"""
     try:
         # Build job configuration in the correct format
-        job_config = build_job_config(args.config, args.project_path, args.intent_file)
+        job_config = build_job_config(
+            args.config, 
+            args.project_path, 
+            args.intent_file,
+            args.lineage_file,
+            args.stage,
+            args.keep_runid
+        )
         
         # Send job request to server
         result = send_job_request(

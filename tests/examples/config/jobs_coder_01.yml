@@ -20,7 +20,6 @@ team:
     providers:
       anthropic:
         api_base: "https://api.anthropic.com"
-        context_length: 200000
         env_var: "ANTHROPIC_API_KEY"
         default_model: "claude-3-5-sonnet-20241022"
         valid_models:

@@ -431,22 +431,6 @@ def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
         """
         Map JobRequest to WorkflowRequest format.
         Transforms the structured job configuration to flat workflow configuration.
-        
-        Job Request Structure:
-        - workorder: Contains project and intent information
-        - team: Contains LLM and orchestration configuration
-        - runtime: Contains runtime settings and environment config
-        
-        Workflow Request Structure:
-        - project_path: Path to project directory
-        - intent: Intent description dictionary
-        - app_config: Combined configuration for all components
-        
-        Args:
-            job_request: Structured job request with workorder, team, and runtime
-            
-        Returns:
-            Equivalent WorkflowRequest with flattened configuration
         """
         try:
             # Get project path from workorder
@@ -467,7 +451,6 @@ def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
             # Add team configuration if provided
             if job_request.team:
                 team_dict = job_request.team.dict(exclude_none=True)
-                # Merge team configuration into app_config
                 for key, value in team_dict.items():
                     if value:
                         app_config[key] = value
@@ -476,23 +459,46 @@ def create_app(default_config: Dict[str, Any] = None) -> FastAPI:
             # Add runtime configuration if provided
             if job_request.runtime:
                 runtime_dict = job_request.runtime.dict(exclude_none=True)
-                # Merge runtime configuration into app_config
                 for key, value in runtime_dict.items():
                     if value:
                         app_config[key] = value
                         extracted_sections.append(f"runtime.{key}")
             
-            # Create workflow request
+            # Extract lineage information from runtime if available
+            lineage_file = None
+            stage = None
+            keep_runid = True
+            
+            if job_request.runtime and job_request.runtime.runtime:
+                runtime_config = job_request.runtime.runtime
+                if isinstance(runtime_config, dict):
+                    lineage_file = runtime_config.get("lineage_file")
+                    stage = runtime_config.get("stage")
+                    keep_runid = runtime_config.get("keep_runid", True)
+                    
+                    if lineage_file:
+                        extracted_sections.append("runtime.runtime.lineage_file")
+                    if stage:
+                        extracted_sections.append("runtime.runtime.stage")
+                    if "keep_runid" in runtime_config:
+                        extracted_sections.append("runtime.runtime.keep_runid")
+            
+            # Create workflow request with all parameters
             workflow_request = WorkflowRequest(
                 project_path=project_path,
                 intent=intent_dict,
-                app_config=app_config
+                app_config=app_config,
+                lineage_file=lineage_file,
+                stage=stage,
+                keep_runid=keep_runid
             )
             
             logger.debug("jobs.mapping.job_to_workflow", 
                     project_path=project_path,
                     extracted_sections=extracted_sections,
-                    app_config_keys=list(app_config.keys()))
+                    app_config_keys=list(app_config.keys()),
+                    lineage_file=lineage_file,
+                    stage=stage)
             
             return workflow_request
             
