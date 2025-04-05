@@ -46,7 +46,7 @@ llm_config:
       tartxt_config:
         script_path: "./c4h_agents/skills/tartxt.py"  # Explicit path to tartxt.py
         input_paths: ["./"]  # Scan everything in project path
-        exclusions: ["**/__pycache__/**"]  # Skip cache directories
+        exclusions: ["**/__pycache__/**", "**/workspaces/**"]  # Skip cache directories
     solution_designer:
       provider: "anthropic"
       model: "claude-3-7-sonnet-20250219"

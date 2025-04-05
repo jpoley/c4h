@@ -1,8 +1,12 @@
 """
 Base agent implementation with enhanced lineage tracking.
 Path: c4h_agents/agents/base_agent.py
+
+Updates:
+- Initialize logger with configuration to ensure proper truncation
 """
 
+# Original imports...
 from typing import Dict, Any, Optional, List, Tuple
 import structlog
 import json
@@ -12,14 +16,15 @@ import uuid
 
 from c4h_agents.core.project import Project
 from c4h_agents.config import create_config_node
-from c4h_agents.utils.logging import get_logger
+from c4h_agents.utils.logging import get_logger  # Keep this import
 from .base_lineage import BaseLineage
 from .lineage_context import LineageContext
 from .types import LogDetail, LLMProvider, LLMMessages, AgentResponse, AgentMetrics
 from .base_config import BaseConfig, log_operation
 from .base_llm import BaseLLM
 
-logger = get_logger()
+# Update to initialize logger with configuration
+logger = get_logger()  # Global logger for module-level logging
 
 class BaseAgent(BaseConfig, BaseLLM):
     """Base agent implementation"""
@@ -65,7 +70,7 @@ class BaseAgent(BaseConfig, BaseLLM):
         self.model_str = self._get_model_str()
         self._setup_litellm(self._get_provider_config(self.provider))
         
-        # Initialize logger with enhanced context
+        # Initialize logger with enhanced context and agent configuration
         log_context = {
             "agent": agent_name,
             "agent_id": self.agent_id,
@@ -80,7 +85,8 @@ class BaseAgent(BaseConfig, BaseLLM):
                 "project_root": str(self.project.paths.root)
             })
             
-        self.logger = structlog.get_logger().bind(**log_context)
+        # Update to pass configuration to logger
+        self.logger = get_logger(self.config).bind(**log_context)
         
         # Initialize lineage tracking with the full configuration
         self.lineage = None
@@ -204,10 +210,12 @@ class BaseAgent(BaseConfig, BaseLLM):
                             user_message=user_message[:10] + "..." if len(user_message) > 10 else user_message)
                             
             # Create complete messages object for LLM and lineage tracking
+            # FIXED: Don't duplicate content between user and formatted_request
+            # Only store the formatted_request if it's different from user_message
             messages = LLMMessages(
                 system=system_message,
                 user=user_message,
-                formatted_request=user_message,
+                formatted_request="",  # Don't store duplicate content
                 raw_context=lineage_context
             )
             

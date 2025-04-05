@@ -280,7 +280,7 @@ class BaseLineage:
         
         # Generate unique event ID if not provided
         event_id = context_node.get_value("agent_execution_id") or str(uuid.uuid4())
-        
+            
         # Extract parent ID in priority order
         parent_id = (
             context_node.get_value("parent_id") or  # Explicit parent ID
@@ -307,6 +307,11 @@ class BaseLineage:
         
         return event_id, parent_id, step, path
 
+    """
+    Lineage tracking implementation leveraging existing workflow event storage.
+    Path: c4h_agents/agents/base_lineage.py
+    """
+
     def _write_file_event(self, event: LineageEvent) -> None:
         """Write event to file system with minimal processing"""
         if not self.enabled or not self.lineage_dir or not self.backends.get("file", {}).get("enabled", False):
@@ -314,8 +319,13 @@ class BaseLineage:
             
         try:
             events_dir = self.lineage_dir / "events"
-            event_file = events_dir / f"{event.event_id}.json"
-            temp_file = events_dir / f"{event.event_id}.tmp"
+            
+            # Create timestamped filename but keep the original event_id in the content
+            timestamp = datetime.now().strftime('%H%M%S')
+            event_filename = f"{timestamp}_{event.event_id}.json"
+            
+            event_file = events_dir / event_filename
+            temp_file = events_dir / f"tmp_{event_filename}"
             
             # Create clear, complete event structure without duplication
             event_data = {
@@ -334,7 +344,11 @@ class BaseLineage:
                 "llm_input": {
                     "system_message": event.messages.system if hasattr(event.messages, "system") else None,
                     "user_message": event.messages.user if hasattr(event.messages, "user") else None,
-                    "formatted_request": event.messages.formatted_request if hasattr(event.messages, "formatted_request") else None,
+                    # Only include formatted_request if it contains different content
+                    "formatted_request": (event.messages.formatted_request if hasattr(event.messages, "formatted_request") and 
+                                        event.messages.formatted_request and 
+                                        event.messages.formatted_request != event.messages.user 
+                                        else None)
                 },
                 "llm_output": self._serialize_value(event.raw_output),
                 "metrics": self._serialize_value(event.metrics),
@@ -357,11 +371,11 @@ class BaseLineage:
                 
         except Exception as e:
             logger.error("lineage.write_failed",
-                         error=str(e),
-                         lineage_dir=str(self.lineage_dir),
-                         agent=event.agent_name,
-                         event_id=event.event_id)
-    
+                        error=str(e),
+                        lineage_dir=str(self.lineage_dir),
+                        agent=event.agent_name,
+                        event_id=event.event_id)
+
     def _emit_marquez_event(self, event: LineageEvent) -> None:
         """Emit event to Marquez"""
         if not OPENLINEAGE_AVAILABLE or not self.client or not self.use_marquez or not self.backends.get("marquez", {}).get("enabled", False):

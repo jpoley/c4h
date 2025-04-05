@@ -3,8 +3,8 @@ API request and response models for workflow service.
 Path: c4h_services/src/api/models.py
 """
 
-from pydantic import BaseModel, Field
-from typing import Dict, Any, Optional, List
+from pydantic import BaseModel, Field, model_validator
+from typing import Dict, Any, Optional, List, Literal
 
 class WorkflowRequest(BaseModel):
     """
@@ -15,6 +15,15 @@ class WorkflowRequest(BaseModel):
     intent: Dict[str, Any] = Field(..., description="Intent description for the workflow")
     system_config: Optional[Dict[str, Any]] = Field(default=None, description="Base system configuration")
     app_config: Optional[Dict[str, Any]] = Field(default=None, description="Application-specific configuration overrides")
+    lineage_file: Optional[str] = Field(default=None, description="Path to lineage file for workflow continuation")
+    stage: Optional[Literal["discovery", "solution_designer", "coder"]] = Field(
+        default=None, 
+        description="Stage to continue workflow from when using lineage file"
+    )
+    keep_runid: Optional[bool] = Field(
+        default=True,
+        description="Whether to keep the original run ID from the lineage file (default: True)"
+    )
 
 class WorkflowResponse(BaseModel):
     """
@@ -38,3 +47,64 @@ class WorkflowDetail(BaseModel):
     storage_path: Optional[str] = Field(default=None, description="Path to stored results if available")
     error: Optional[str] = Field(default=None, description="Error message if status is 'error'")
     execution_metadata: Optional[Dict[str, Any]] = Field(default=None, description="Execution metadata and tracking info")
+    source_lineage: Optional[str] = Field(default=None, description="Source lineage file if workflow was continued")
+    stage: Optional[str] = Field(default=None, description="Stage that the workflow continued from if applicable")
+
+
+# Jobs API Models
+
+class ProjectConfig(BaseModel):
+    """Project configuration for a job request"""
+    path: str = Field(..., description="Path to the project directory")
+    workspace_root: Optional[str] = Field(default=None, description="Directory for working files")
+    source_root: Optional[str] = Field(default=None, description="Base directory for source code")
+    output_root: Optional[str] = Field(default=None, description="Base directory for output files")
+
+class IntentConfig(BaseModel):
+    """Intent configuration for a job request"""
+    description: str = Field(..., description="Description of the refactoring intent")
+    target_files: Optional[List[str]] = Field(default=None, description="Optional list of specific files to target")
+
+class WorkorderConfig(BaseModel):
+    """Workorder configuration containing project and intent details"""
+    project: ProjectConfig
+    intent: IntentConfig
+
+class TeamConfig(BaseModel):
+    """Team configuration containing LLM and orchestration settings"""
+    llm_config: Optional[Dict[str, Any]] = Field(default=None, description="LLM configuration settings")
+    orchestration: Optional[Dict[str, Any]] = Field(default=None, description="Orchestration configuration settings")
+
+class RuntimeConfig(BaseModel):
+    """Runtime configuration for job execution environment"""
+    runtime: Optional[Dict[str, Any]] = Field(default=None, description="Runtime workflow and lineage settings")
+    logging: Optional[Dict[str, Any]] = Field(default=None, description="Logging configuration")
+    backup: Optional[Dict[str, Any]] = Field(default=None, description="Backup configuration")
+
+class JobRequest(BaseModel):
+    """Job request model with structured configuration groups"""
+    workorder: WorkorderConfig = Field(..., description="Workorder configuration with project and intent details")
+    team: Optional[TeamConfig] = Field(default=None, description="Team configuration with LLM and orchestration settings")
+    runtime: Optional[RuntimeConfig] = Field(default=None, description="Runtime configuration for execution environment")
+
+    # Replace @root_validator with @model_validator for Pydantic v2 compatibility
+    @model_validator(mode='after')
+    def validate_structure(self) -> 'JobRequest':
+        """Validate the structure of the job request"""
+        # Additional validation could be added here if needed
+        return self
+
+class JobResponse(BaseModel):
+    """Response model for job operations"""
+    job_id: str = Field(..., description="Unique identifier for the job")
+    status: str = Field(..., description="Current status of the job")
+    storage_path: Optional[str] = Field(default=None, description="Path where job results are stored")
+    error: Optional[str] = Field(default=None, description="Error message if status is error")
+
+class JobStatus(BaseModel):
+    """Detailed job status information"""
+    job_id: str = Field(..., description="Unique identifier for the job")
+    status: str = Field(..., description="Current status of the job")
+    storage_path: Optional[str] = Field(default=None, description="Path where job results are stored")
+    error: Optional[str] = Field(default=None, description="Error message if status is error")
+    changes: Optional[List[Dict[str, Any]]] = Field(default=None, description="List of changes made by the job")

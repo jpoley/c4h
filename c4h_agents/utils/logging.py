@@ -1,11 +1,28 @@
 """
-Utility functions for logging with string truncation.
+Central logging utility with configurable truncation.
 Path: c4h_agents/utils/logging.py
 """
 
 from typing import Any, Dict, Optional
 import structlog
 from c4h_agents.config import create_config_node
+
+# Default truncation values
+DEFAULT_PREFIX_LENGTH = 50
+DEFAULT_SUFFIX_LENGTH = 50
+
+# Global configuration cache
+_global_config = {}
+
+def initialize_logging_config(config: Dict[str, Any]) -> None:
+    """
+    Initialize global logging configuration.
+    
+    Args:
+        config: Complete configuration dictionary
+    """
+    global _global_config
+    _global_config = config.copy() if config else {}
 
 def truncate_log_string(
     value: Any, 
@@ -30,13 +47,22 @@ def truncate_log_string(
     if config:
         config_node = create_config_node(config)
         if prefix_len is None:
-            prefix_len = config_node.get_value("logging.truncate.prefix_length") or 10
+            prefix_len = config_node.get_value("logging.truncate.prefix_length") or DEFAULT_PREFIX_LENGTH
         if suffix_len is None:
-            suffix_len = config_node.get_value("logging.truncate.suffix_length") or 20
+            suffix_len = config_node.get_value("logging.truncate.suffix_length") or DEFAULT_SUFFIX_LENGTH
     else:
-        # Default values if no config provided
-        prefix_len = prefix_len or 10
-        suffix_len = suffix_len or 20
+        # Use global config if available, otherwise use defaults
+        global _global_config
+        if _global_config:
+            config_node = create_config_node(_global_config)
+            if prefix_len is None:
+                prefix_len = config_node.get_value("logging.truncate.prefix_length") or DEFAULT_PREFIX_LENGTH
+            if suffix_len is None:
+                suffix_len = config_node.get_value("logging.truncate.suffix_length") or DEFAULT_SUFFIX_LENGTH
+        else:
+            # Default values if no config provided
+            prefix_len = prefix_len or DEFAULT_PREFIX_LENGTH
+            suffix_len = suffix_len or DEFAULT_SUFFIX_LENGTH
     
     # For complex objects, convert to string first
     if not isinstance(value, str):
@@ -73,13 +99,17 @@ def get_logger(config: Optional[Dict[str, Any]] = None) -> structlog.BoundLogger
     Returns:
         Configured structlog logger
     """
+    # If config provided, update global config
+    if config:
+        initialize_logging_config(config)
+    
     # Create a processor that will truncate string values
     def truncate_processor(logger, method_name, event_dict):
         """Process event dict, truncating string values."""
         # Don't truncate the event name
         for key, value in list(event_dict.items()):
             if key != "event":
-                event_dict[key] = truncate_log_string(value, config)
+                event_dict[key] = truncate_log_string(value)
         return event_dict
     
     # Create a logger with the truncate processor

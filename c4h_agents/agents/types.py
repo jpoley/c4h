@@ -43,18 +43,26 @@ class LLMMessages:
     """Complete message set for LLM interactions"""
     system: str                       # System prompt/persona
     user: str                        # User message content
-    formatted_request: str           # Final formatted request
-    raw_context: Dict[str, Any]      # Original input context
+    formatted_request: str = ""      # Optional formatted request (only if different from user)
+    raw_context: Dict[str, Any] = field(default_factory=dict)      # Original input context
     timestamp: datetime = field(default_factory=datetime.utcnow)
+
+    def __post_init__(self):
+        """Prevent duplicate storage of content"""
+        if self.formatted_request and self.formatted_request == self.user:
+            self.formatted_request = ""  # Clear if identical to user message
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert messages to dictionary for logging"""
-        return {
+        result = {
             "system": self.system,
             "user": self.user,
-            "formatted_request": self.formatted_request,
             "timestamp": self.timestamp.isoformat()
         }
+        # Only include formatted_request if it contains unique content
+        if self.formatted_request and self.formatted_request != self.user:
+            result["formatted_request"] = self.formatted_request
+        return result
 
 @dataclass
 class AgentResponse:
